@@ -232,17 +232,114 @@ def test_confirmed_mutation_survives_unavailable_followup_observation(tmp_path) 
     assert fx.service.is_degraded("agt_1", "oc_team") is False
 
 
-def test_idempotent_projection_with_unknown_observation_does_not_replay_mutation(tmp_path) -> None:
-    fx = _fixture(tmp_path, member_groups=("oc_team",))
+def test_idempotent_projection_uses_durable_fact_without_remote_observation(tmp_path) -> None:
+    fx = _fixture(tmp_path)
+    first = fx.service.mutate(_request())
+    assert first.state is MembershipState.ACTIVE
+    fx.remote.observations.clear()
+    fx.remote.mutations.clear()
+    fx.remote.observation_error = MembershipRemoteUnknown(
+        "membership_observation_unknown"
+    )
+    before = fx.writer.get_last_frame().sequence
+
+    outcome = fx.service.mutate(_request())
+
+    assert outcome.state is MembershipState.ACTIVE
+    assert outcome.confirmed is True
+    assert outcome.changed is False
+    assert fx.remote.mutations == []
+    assert fx.remote.observations == []
+    assert fx.writer.get_last_frame().sequence == before
+
+
+def test_replay_preserves_last_committed_membership_after_idempotent_unknown(
+    tmp_path,
+) -> None:
+    fx = _fixture(tmp_path)
+    committed = fx.service.mutate(_request())
+    assert committed.state is MembershipState.ACTIVE
+
+    authority = fx.service._resolve_authority(_request())
+    effect = fx.service._prepare(_request(), authority)
+    fx.service._mark_executing(effect.effect_id)
+    fx.service._mark_action_required(
+        effect.effect_id,
+        "idempotency_observation_unknown",
+    )
+
+    restarted = EmployeeMembershipService(
+        writer=fx.writer,
+        hire_service=fx.hire,
+        remote=fx.remote,
+        admin_principal_ids=frozenset({"ou_admin"}),
+        team_owner_resolver=lambda _chat: "ou_owner",
+        team_active_resolver=lambda _chat: True,
+    )
+
+    record = restarted.get("tenant_1", "oc_team", "agt_1")
+    assert record is not None
+    assert record.state is MembershipState.ACTIVE
+    assert restarted.is_degraded("agt_1", "oc_team") is False
+
+
+def test_failed_remove_cannot_make_repeat_add_report_false_success(tmp_path) -> None:
+    fx = _fixture(tmp_path)
+    assert fx.service.mutate(_request()).state is MembershipState.ACTIVE
+    fx.remote.mutation_error = TimeoutError("remove unknown")
     fx.remote.observation_error = MembershipRemoteUnknown(
         "membership_observation_unknown"
     )
 
-    outcome = fx.service.mutate(_request())
+    removed = fx.service.mutate(
+        _request(operation=MembershipOperation.REMOVE)
+    )
+    assert removed.state is MembershipState.DEGRADED
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == (
+        "oc_team",
+    )
 
-    assert outcome.state is MembershipState.DEGRADED
-    assert outcome.confirmed is False
-    assert fx.remote.mutations == []
+    repeated_add = fx.service.mutate(_request())
+
+    assert repeated_add.confirmed is False
+    assert repeated_add.state is MembershipState.DEGRADED
+    assert fx.service.is_degraded("agt_1", "oc_team") is True
+
+
+def test_replay_does_not_heal_old_add_unknown_after_degraded_remove(
+    tmp_path,
+) -> None:
+    fx = _fixture(tmp_path)
+    assert fx.service.mutate(_request()).state is MembershipState.ACTIVE
+    fx.remote.mutation_error = TimeoutError("remove unknown")
+    fx.remote.observation_error = MembershipRemoteUnknown(
+        "membership_observation_unknown"
+    )
+    assert fx.service.mutate(
+        _request(operation=MembershipOperation.REMOVE)
+    ).state is MembershipState.DEGRADED
+
+    authority = fx.service._resolve_authority(_request())
+    legacy_add = fx.service._prepare(_request(), authority)
+    fx.service._mark_executing(legacy_add.effect_id)
+    fx.service._mark_action_required(
+        legacy_add.effect_id,
+        "idempotency_observation_unknown",
+    )
+
+    restarted = EmployeeMembershipService(
+        writer=fx.writer,
+        hire_service=fx.hire,
+        remote=fx.remote,
+        admin_principal_ids=frozenset({"ou_admin"}),
+        team_owner_resolver=lambda _chat: "ou_owner",
+        team_active_resolver=lambda _chat: True,
+    )
+
+    record = restarted.get("tenant_1", "oc_team", "agt_1")
+    assert record is not None
+    assert record.state is MembershipState.DEGRADED
+    assert restarted.is_degraded("agt_1", "oc_team") is True
 
 
 def test_same_chat_mutations_are_serialized(tmp_path) -> None:

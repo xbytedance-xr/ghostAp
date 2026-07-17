@@ -56,6 +56,17 @@ class TestAdminAlwaysAllowed:
         allowed, _ = guard.can_auto_activate("admin1", "chat1", settings)
         assert allowed is True
 
+    def test_production_frozenset_admin_contract(self, guard: ActivationGuard) -> None:
+        settings = FakeSettings(
+            admin_user_ids=frozenset({"admin1"}),
+            slock_passive_mode=True,
+            slock_auto_activate_default_policy="admin_only",
+        )
+
+        allowed, _ = guard.can_auto_activate("admin1", "chat1", settings)
+
+        assert allowed is True
+
 
 class TestChatOwnerAlwaysAllowed:
     """Chat owner parameter was removed — these tests verify the removal."""
@@ -482,5 +493,4 @@ class TestActivationGuardReturnsReason:
         allowed3, reason3 = guard.can_auto_activate("user1", "chat1", settings)
         assert allowed3 is False
         assert reason3 == ACTIVATION_DENIED_RATE_LIMIT
-
 

@@ -1280,6 +1280,114 @@ class ProductionEmployeeHireService:
                 raise HireAdmissionError("atomic activation did not enter ACTIVE")
             return activated
 
+    def commit_automatic_activation(
+        self,
+        intent_id: str,
+        *,
+        activated_at: float,
+    ) -> DurableHireState:
+        """Enter ACTIVE from anchored local Slash and Channel READY evidence."""
+
+        if (
+            isinstance(activated_at, bool)
+            or not isinstance(activated_at, (int, float))
+            or not math.isfinite(float(activated_at))
+        ):
+            raise HireAdmissionError("automatic activation time is invalid")
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            state = self._require_hire(intent_id)
+            slash_effect_id = self._latest_slash_effect_id(
+                state,
+                state.channel_generation,
+            )
+            channel_effect_id = f"channel-start:{state.channel_generation}"
+            slash_metadata = (
+                dict(state.metadata_for(slash_effect_id))
+                if slash_effect_id is not None
+                else {}
+            )
+            channel_metadata = dict(state.metadata_for(channel_effect_id))
+            if (
+                state.phase is not HirePhase.READY_PENDING_VERIFICATION
+                or state.verification_consumed
+                or not state.credential_ref
+                or not state.requester_principal_id
+                or slash_effect_id is None
+                or state.effect_state(slash_effect_id) is not HireEffectState.COMMITTED
+                or slash_metadata.get("slash_spec_hash") != state.slash_spec_hash
+                or slash_metadata.get("slash_observed_hash") != state.slash_spec_hash
+                or state.effect_state(channel_effect_id) is not HireEffectState.COMMITTED
+                or channel_metadata.get("app_id") != state.app_id
+                or channel_metadata.get("identity_app_id") != state.app_id
+                or channel_metadata.get("generation") != str(state.channel_generation)
+                or channel_metadata.get("connection_id") != state.channel_connection_id
+                or state.channel_identity_app_id != state.app_id
+                or not state.channel_connection_id
+                or state.slash_verified_at <= 0
+                or state.channel_verified_at < state.slash_verified_at
+                or float(activated_at) < state.channel_verified_at
+                or any(
+                    effect_state in {
+                        HireEffectState.PREPARED,
+                        HireEffectState.EXECUTING,
+                    }
+                    for _effect_id, effect_state in state.effects
+                )
+            ):
+                raise HireAdmissionError("automatic activation evidence is incomplete")
+            events = (
+                JournalEvent(
+                    event_type="hire.activation.automatic",
+                    aggregate_id=state.intent_id,
+                    payload={
+                        "tenant_key": state.tenant_key,
+                        "app_id": state.app_id,
+                        "agent_id": state.agent_id,
+                        "generation": state.channel_generation,
+                        "slash_spec_hash": state.slash_spec_hash,
+                        "channel_connection_id": state.channel_connection_id,
+                        "requester_principal_id": state.requester_principal_id,
+                        "requester_union_id": state.requester_union_id,
+                        "source": "channel_ready",
+                        "activated_at": float(activated_at),
+                    },
+                ),
+                JournalEvent(
+                    event_type="employee.state_changed",
+                    aggregate_id=state.agent_id,
+                    payload={"state": HirePhase.ACTIVE.value},
+                ),
+            )
+            last_frame = self._writer.get_last_frame()
+            writer_sequence = 0 if last_frame is None else last_frame.sequence
+            writer_hash = "" if last_frame is None else last_frame.frame_hash
+            expected_versions = self._writer.get_aggregate_versions(
+                (state.intent_id, state.agent_id)
+            )
+            try:
+                validate_workforce_events(self._projection_state, (events[-1],))
+            except ProjectionError as exc:
+                raise HireAdmissionError(
+                    "automatic activation workforce transition rejected"
+                ) from exc
+            result = self._writer.commit(
+                events,
+                expected_versions,
+                expected_head_sequence=writer_sequence,
+                expected_head_hash=writer_hash,
+            )
+            if result.state is not CommitState.ANCHORED:
+                raise AnchorMismatchError(
+                    "automatic activation commit was not anchored"
+                )
+            apply_frame(self._projection_state, result.frame)
+            self._hire_projection = HireProjection.rebuild(self._writer.replay())
+            activated = self._require_hire(state.intent_id)
+            if activated.phase is not HirePhase.ACTIVE:
+                raise HireAdmissionError("automatic activation did not enter ACTIVE")
+            return activated
+
     def _commit_hire_event(self, event: JournalEvent) -> DurableHireState:
         """Commit one already-validated hire-only fact and advance all cursors."""
         with self.employee_dispatch_guard(), self._writer.transaction_guard():

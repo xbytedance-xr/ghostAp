@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from ..project import ProjectContext
 
 
-from ..agent.intent_recognizer import IntentType
+from ..agent.intent_recognizer import IntentRecognizer, IntentType
 from ..card.ui_text import UI_TEXT
 from ..slock_engine.gateway import NEEDS_ACTIVATION
 from ..utils.errors import get_error_detail
@@ -220,6 +220,16 @@ class MessageDispatcher:
             self.client._reply_text(message_id, "💡 **直接在群里发任务即可，Agent 自动处理。** 无需任何前置命令。")
             return
 
+        # Shell is a SMART control/data-plane route of its own.  Detect it from
+        # the shared intent SSOT before passive Slock can classify, resolve, or
+        # clarify it.  The normal intent path below still distinguishes `cd`
+        # from executable shell commands and preserves their existing handling.
+        _is_smart_shell = (
+            slock_context_allowed
+            and command_match is None
+            and IntentRecognizer.looks_like_shell(text or "")
+        )
+
         # Slock active chat: route non-command messages to slock engine
         # Passive mode (default): only managed-chat check is needed.
         # Legacy mode: both activation AND managed-chat registration required.
@@ -233,7 +243,7 @@ class MessageDispatcher:
             command_match is not None
             or self.client._is_interceptable_command_match(command_match)
         )
-        if _passive_mode and slock_context_allowed:
+        if _passive_mode and slock_context_allowed and not _is_smart_shell:
             if _is_managed and not _is_global_command:
                 # Passive mode: managed chat alone is sufficient for routing
                 # BUT skip if this is a valid global command
@@ -297,6 +307,7 @@ class MessageDispatcher:
                         message_id,
                         json.dumps(card, ensure_ascii=False),
                     )
+                    return
                 elif result.label == SlockMessageClass.TASK and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type):
                     activated, reason = self.client._auto_activate_slock(chat_id, text, project)
                     if activated:
@@ -318,7 +329,7 @@ class MessageDispatcher:
                             json.dumps(card, ensure_ascii=False),
                         )
                         return
-        elif slock_context_allowed:
+        elif slock_context_allowed and not _is_smart_shell:
             # Legacy mode: require both active AND managed
             if self.client._is_slock_active(chat_id) and _is_managed:
                 self.client._add_reaction(message_id, EmojiReaction.on_processing())

@@ -321,85 +321,15 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         return bool(match and match.command in TOPIC_ENGINE_COMMANDS)
 
     @staticmethod
-    def _looks_like_local_executable_path(first_word: str) -> bool:
-        token = (first_word or "").strip()
-        if token.startswith(("./", "../", "~/")):
-            tail = token.rsplit("/", 1)[-1]
-            return bool(tail and tail not in {".", ".."})
-        return False
-
-    @staticmethod
     def is_likely_shell_command(text: str) -> bool:
         """Heuristic check for common shell commands.
 
         Used for early routing in _handle_message to prevent shell commands
         from blocking behind long-running programming tasks on the project queue.
         """
-        text_lower = text.strip()
-        if not text_lower or text_lower.startswith("/"):
-            return False
-        first_word = text_lower.split()[0].lower()
-        if SystemHandler._looks_like_local_executable_path(first_word):
-            return True
-        # Single-word commands that are almost certainly shell
-        shell_exact = {
-            "ls",
-            "pwd",
-            "whoami",
-            "date",
-            "uptime",
-            "df",
-            "du",
-            "ps",
-            "top",
-            "htop",
-            "free",
-            "uname",
-            "env",
-            "id",
-            "hostname",
-            "which",
-            "file",
-            "wc",
-            "tree",
-        }
-        if first_word in shell_exact:
-            return True
-        # Prefix patterns for parameterized shell commands
-        shell_prefixes = {
-            "ls",
-            "cat",
-            "head",
-            "tail",
-            "wc",
-            "git",
-            "find",
-            "grep",
-            "mkdir",
-            "rm",
-            "cp",
-            "mv",
-            "chmod",
-            "chown",
-            "touch",
-            "echo",
-            "curl",
-            "wget",
-            "pip",
-            "uv",
-            "npm",
-            "yarn",
-            "pnpm",
-            "docker",
-            "make",
-            "python",
-            "node",
-            "sh",
-            "bash",
-            "zsh",
-            "tree",
-        }
-        return first_word in shell_prefixes
+        from ...agent.intent_recognizer import IntentRecognizer
+
+        return IntentRecognizer.looks_like_shell(text)
 
     @staticmethod
     def is_interceptable_command_match(command_match: CommandMatch | None) -> bool:

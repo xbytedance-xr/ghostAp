@@ -80,7 +80,7 @@ class TestSlockHandlerEscalationResolve:
     # AC9/AC16: Admin click → resolve + card update + confirmation
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_admin_click_resolves_successfully(self, mock_sender, mock_settings, mock_resolve_name):
@@ -112,7 +112,7 @@ class TestSlockHandlerEscalationResolve:
     # AC10/AC16: Non-admin click → rejected, engine not called
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Random User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Random User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_non_admin_click_rejected(self, mock_sender, mock_settings, mock_resolve_name):
@@ -138,7 +138,7 @@ class TestSlockHandlerEscalationResolve:
     # AC10: Team owner (non-global-admin) can resolve
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Owner User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Owner User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_team_owner_can_resolve(self, mock_sender, mock_settings, mock_resolve_name):
@@ -203,7 +203,7 @@ class TestSlockHandlerEscalationResolve:
     # AC16: No active engine → no crash
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_no_active_engine_no_crash(self, mock_sender, mock_settings, mock_resolve_name):
@@ -226,7 +226,7 @@ class TestSlockHandlerEscalationResolve:
     # AC17: Already resolved → 'already handled' message
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_already_resolved_escalation(self, mock_sender, mock_settings, mock_resolve_name):
@@ -251,7 +251,7 @@ class TestSlockHandlerEscalationResolve:
     # AC11: Invalid resolution value → rejected
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_invalid_resolution_rejected(self, mock_sender, mock_settings, mock_resolve_name):
@@ -275,7 +275,7 @@ class TestSlockHandlerEscalationResolve:
     # R2: update_card fails → fallback text confirmation
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_update_card_failure_fallback(self, mock_sender, mock_settings, mock_resolve_name):
@@ -305,7 +305,7 @@ class TestSlockHandlerEscalationResolve:
     # R3: card update succeeds → no redundant text
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_resolve_success_no_redundant_text(self, mock_sender, mock_settings, mock_resolve_name):
@@ -371,7 +371,7 @@ class TestSlockHandlerEscalationResolve:
     # handle_card_action dispatches slock_escalation_resolve correctly
     # ------------------------------------------------------------------
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Admin User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Admin User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_handle_card_action_dispatches_to_resolve(self, mock_sender, mock_settings, mock_resolve_name):
@@ -393,7 +393,7 @@ class TestSlockHandlerEscalationResolve:
 class TestOwnerIdRestoredResolvePermission:
     """AC-14 + AC-09: owner_id restored via marker merge allows team creator to resolve."""
 
-    @patch("src.feishu.handlers.slock.resolve_display_name", return_value="Creator User")
+    @patch("src.feishu.handlers.slock.resolve_display_name_nonblocking", return_value="Creator User")
     @patch("src.config.get_settings")
     @patch("src.thread.manager.get_current_sender_id")
     def test_restored_owner_can_resolve_after_restart(self, mock_sender, mock_settings, mock_resolve_name):

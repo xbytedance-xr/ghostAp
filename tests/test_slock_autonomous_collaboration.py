@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.autonomous.team import TeamAdmissionError
 from src.slock_engine.intent_router import IntentResult
@@ -108,6 +110,119 @@ def test_plain_task_prefers_durable_visible_employee_team_service():
     engine.add_task.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "修复任务队列死锁并补充测试",
+        "创建任务队列监控并补充告警",
+    ],
+)
+def test_plain_team_task_does_not_wait_for_llm_intent_classification(text):
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler.ctx.employee_team_service.start_task.return_value = MagicMock(
+        run_id="teamrun_fast_path"
+    )
+    handler._intent_router.fast_classify.return_value = None
+    handler._classify_with_timeout = MagicMock(
+        side_effect=AssertionError("Team task must not invoke LLM NLI")
+    )
+
+    with patch(
+        "src.thread.manager.get_current_tenant_key",
+        return_value="tenant_1",
+    ), patch(
+        "src.thread.manager.get_current_sender_id",
+        return_value="ou_user",
+    ):
+        handler.handle_message(
+            "om_fast",
+            "oc_team",
+            text,
+            None,
+        )
+
+    handler.ctx.employee_team_service.start_task.assert_called_once()
+    handler._classify_with_timeout.assert_not_called()
+    handler._execute_routed_message.assert_not_called()
+
+
+def test_non_task_conversation_still_uses_nli_before_team_admission():
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler._intent_router.fast_classify.return_value = None
+    handler._classify_with_timeout = AsyncMock(
+        return_value=IntentResult(
+            action=SlockCommandAction.CHITCHAT,
+            confidence=0.95,
+            params={},
+        )
+    )
+
+    handler.handle_message("om_weather", "oc_team", "今天天气怎么样？", None)
+
+    handler._classify_with_timeout.assert_awaited_once()
+    handler.ctx.employee_team_service.start_task.assert_not_called()
+
+
+def test_natural_language_command_still_uses_nli_before_team_admission():
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler._intent_router.fast_classify.return_value = None
+    handler._classify_with_timeout = AsyncMock(
+        return_value=IntentResult(
+            action=SlockCommandAction.STATUS,
+            confidence=0.95,
+            params={},
+        )
+    )
+    handler._dispatch_nli_intent = MagicMock()
+
+    handler.handle_message("om_status", "oc_team", "现在团队状态怎么样？", None)
+
+    handler._classify_with_timeout.assert_awaited_once()
+    handler._dispatch_nli_intent.assert_called_once()
+    handler.ctx.employee_team_service.start_task.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "创建角色",
+        "如何创建角色？",
+        "请帮我创建角色",
+        "不要创建任务",
+        "不要修复登录问题",
+    ],
+)
+def test_action_word_control_command_is_not_stolen_by_team_fast_path(text):
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler._intent_router.fast_classify.return_value = None
+    handler._classify_with_timeout = AsyncMock(
+        return_value=IntentResult(
+            action=SlockCommandAction.NEW_ROLE,
+            confidence=0.95,
+            params={"name": ""},
+        )
+    )
+    handler._dispatch_nli_intent = MagicMock()
+
+    handler.handle_message("om_role", "oc_team", text, None)
+
+    handler._classify_with_timeout.assert_awaited_once()
+    handler._dispatch_nli_intent.assert_called_once()
+    handler.ctx.employee_team_service.start_task.assert_not_called()
+
+
 def test_plain_task_without_ready_employee_is_not_reported_as_accepted():
     handler = _make_handler()
     engine = _make_engine_for_plan()
@@ -128,7 +243,7 @@ def test_plain_task_without_ready_employee_is_not_reported_as_accepted():
 
     reply = handler.reply_text.call_args.args[1]
     assert "已受理" not in reply
-    assert "/status" in reply
+    assert "自动恢复" in reply
     assert "/role add" in reply
     engine.add_task.assert_not_called()
 

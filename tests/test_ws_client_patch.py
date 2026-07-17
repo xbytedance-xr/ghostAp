@@ -44,6 +44,46 @@ def _make_ws_client(**extra_settings):
 
 
 class TestCardActionHandler(unittest.TestCase):
+    def test_card_action_display_name_lookup_is_nonblocking(self):
+        client = _make_ws_client()
+        client._action_dispatcher.dispatch = MagicMock(return_value=True)
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                action=SimpleNamespace(
+                    value={"action": "test_action"},
+                    behaviors=None,
+                    tag="button",
+                    name="test_action",
+                ),
+                operator=SimpleNamespace(
+                    open_id="ou_x",
+                    user_id="u_x",
+                    union_id="on_x",
+                ),
+                context=SimpleNamespace(
+                    open_message_id="om_1",
+                    open_chat_id="oc_1",
+                    chat_type="group",
+                ),
+            )
+        )
+
+        with (
+            patch(
+                "src.feishu.user_cache.resolve_display_name",
+                side_effect=AssertionError("synchronous Contact lookup used"),
+            ) as sync_resolve,
+            patch(
+                "src.feishu.user_cache.resolve_display_name_nonblocking",
+                return_value="ou_x(ID)",
+            ) as nonblocking_resolve,
+        ):
+            client._process_card_action_async(data)
+
+        sync_resolve.assert_not_called()
+        nonblocking_resolve.assert_called_once_with("ou_x", client._get_api_client)
+        client._action_dispatcher.dispatch.assert_called_once()
+
     def test_handle_card_action_returns_none(self):
         """验证 _handle_card_action 返回 None"""
         # Mock settings

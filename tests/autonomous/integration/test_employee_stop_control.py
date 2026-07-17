@@ -20,6 +20,7 @@ from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.team import (
     EmployeeTeamService,
     TeamRunState,
+    TeamTarget,
 )
 from tests.autonomous.integration.test_employee_slock_gateway import (
     _binding,
@@ -343,7 +344,11 @@ def test_team_timeout_anchors_cancel_interrupts_live_runner_before_retry(
     known_acceptances = set(harness.ingress.state.by_acceptance_id)
     team_thread = threading.Thread(
         target=service._execute,  # noqa: SLF001
-        args=(state, "live timeout"),
+        args=(
+            state,
+            "live timeout",
+            (TeamTarget("agt_alpha", "Alpha", "developer"),),
+        ),
         daemon=True,
     )
     team_thread.start()

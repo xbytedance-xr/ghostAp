@@ -190,7 +190,27 @@ class EmployeeMembershipService:
         with self._chat_lock(request.chat_id):
             authority = self._resolve_authority(request)
             desired = request.operation is MembershipOperation.ADD
+            desired_state = (
+                MembershipState.ACTIVE if desired else MembershipState.ABSENT
+            )
             projected = request.chat_id in authority.member_groups
+            record = self.get(
+                request.tenant_key,
+                request.chat_id,
+                request.agent_id,
+            )
+            if (
+                projected is desired
+                and record is not None
+                and record.state is desired_state
+                and record.confirmed_state is desired_state
+            ):
+                return MembershipMutationOutcome(
+                    state=desired_state,
+                    confirmed=True,
+                    changed=False,
+                )
+
             if projected is desired:
                 try:
                     observed = self._observe(request, authority)
@@ -199,14 +219,17 @@ class EmployeeMembershipService:
                     self._mark_executing(effect.effect_id)
                     return self._mark_action_required(
                         effect.effect_id,
-                        "idempotency_observation_unknown",
+                        (
+                            "remote_unknown"
+                            if record is not None
+                            and record.state is MembershipState.DEGRADED
+                            else "idempotency_observation_unknown"
+                        ),
                     )
                 if observed is desired:
-                    return MembershipMutationOutcome(
-                        state=(MembershipState.ACTIVE if desired else MembershipState.ABSENT),
-                        confirmed=True,
-                        changed=False,
-                    )
+                    effect = self._prepare(request, authority)
+                    self._mark_executing(effect.effect_id)
+                    return self._commit_confirmed(effect.effect_id, observed)
 
             effect = self._prepare(request, authority)
             self._mark_executing(effect.effect_id)

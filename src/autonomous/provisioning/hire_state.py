@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -73,6 +74,8 @@ class DurableHireState:
     activation_ingress_event_id: str = ""
     activation_ingress_message_id: str = ""
     activation_send_request_id: str = ""
+    activation_source: str = ""
+    activation_verified_at: float = 0.0
     phase: HirePhase = HirePhase.PROVISIONING_APP
     effects: tuple[tuple[str, HireEffectState], ...] = ()
     effect_types: tuple[tuple[str, str], ...] = ()
@@ -454,6 +457,8 @@ class HireProjection:
                         activation_ingress_event_id="",
                         activation_ingress_message_id="",
                         activation_send_request_id="",
+                        activation_source="",
+                        activation_verified_at=0.0,
                         last_sequence=frame.sequence,
                     )
                     continue
@@ -500,6 +505,7 @@ class HireProjection:
                         "verified_at",
                     }
                     legacy_keys = expected_keys - {"sender_union_id"}
+                    verified_at = event.payload.get("verified_at")
                     if set(event.payload) != expected_keys and set(event.payload) != legacy_keys:
                         raise HireProjectionError("invalid activation evidence payload")
                     if (
@@ -521,6 +527,14 @@ class HireProjection:
                             and event.payload["sender_union_id"]
                             != current.requester_union_id
                         )
+                        or isinstance(verified_at, bool)
+                        or not isinstance(verified_at, (int, float))
+                        or not math.isfinite(float(verified_at))
+                        or not (
+                            current.verification_issued_at
+                            <= float(verified_at)
+                            <= current.verification_expires_at
+                        )
                     ):
                         raise HireProjectionError("invalid activation evidence binding")
                     states[intent_id] = replace(
@@ -534,6 +548,54 @@ class HireProjection:
                         activation_send_request_id=_required_string(
                             event.payload, "employee_send_request_id"
                         ),
+                        activation_source="status",
+                        activation_verified_at=float(verified_at),
+                        last_sequence=frame.sequence,
+                    )
+                    continue
+                if event.event_type == "hire.activation.automatic":
+                    expected_keys = {
+                        "tenant_key",
+                        "app_id",
+                        "agent_id",
+                        "generation",
+                        "slash_spec_hash",
+                        "channel_connection_id",
+                        "requester_principal_id",
+                        "requester_union_id",
+                        "source",
+                        "activated_at",
+                    }
+                    activated_at = event.payload.get("activated_at")
+                    if (
+                        set(event.payload) != expected_keys
+                        or event.aggregate_id != current.intent_id
+                        or current.phase is not HirePhase.READY_PENDING_VERIFICATION
+                        or current.verification_consumed
+                        or event.payload["tenant_key"] != current.tenant_key
+                        or event.payload["app_id"] != current.app_id
+                        or event.payload["agent_id"] != current.agent_id
+                        or event.payload["generation"] != current.channel_generation
+                        or event.payload["slash_spec_hash"] != current.slash_spec_hash
+                        or event.payload["channel_connection_id"]
+                        != current.channel_connection_id
+                        or event.payload["requester_principal_id"]
+                        != current.requester_principal_id
+                        or event.payload["requester_union_id"]
+                        != current.requester_union_id
+                        or event.payload["source"] != "channel_ready"
+                        or isinstance(activated_at, bool)
+                        or not isinstance(activated_at, (int, float))
+                        or not math.isfinite(float(activated_at))
+                        or float(activated_at)
+                        < max(current.slash_verified_at, current.channel_verified_at)
+                    ):
+                        raise HireProjectionError("invalid automatic activation binding")
+                    states[intent_id] = replace(
+                        current,
+                        verification_consumed=True,
+                        activation_source="channel_ready",
+                        activation_verified_at=float(activated_at),
                         last_sequence=frame.sequence,
                     )
                     continue

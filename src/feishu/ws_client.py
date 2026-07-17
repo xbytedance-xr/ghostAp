@@ -1360,8 +1360,12 @@ class FeishuWSClient:
             set_current_sender_union_id(_sender_union_id or None)
             # Resolve display name via cached Feishu contact API lookup;
             # falls back to truncated sender_id if unavailable.
-            from .user_cache import resolve_display_name
-            _display_name = resolve_display_name(_sender_id, self._get_api_client) if _sender_id else ""
+            from .user_cache import resolve_display_name_nonblocking
+            _display_name = (
+                resolve_display_name_nonblocking(_sender_id, self._get_api_client)
+                if _sender_id
+                else ""
+            )
             set_current_sender_name(_display_name or (_sender_id[:8] if _sender_id else ""))
             _is_p2p = task_ctx.spec.is_p2p if task_ctx and hasattr(task_ctx, "spec") else False
             set_current_is_p2p(_is_p2p)
@@ -2337,7 +2341,7 @@ class FeishuWSClient:
                 else (getattr(operator, "union_id", None) or "")
             )
             set_current_sender_union_id(_operator_union_id or None)
-            from .user_cache import resolve_display_name as _resolve_name
+            from .user_cache import resolve_display_name_nonblocking as _resolve_name
             _op_name = _resolve_name(_operator_id, self._get_api_client) if _operator_id else ""
             set_current_sender_name(_op_name or (_operator_id[:8] if _operator_id else ""))
             set_current_is_p2p(_card_is_p2p)

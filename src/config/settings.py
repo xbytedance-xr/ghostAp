@@ -744,6 +744,7 @@ class Settings(BaseSettings):
     autonomous_goal_queue_limit: int = Field(default=1000, ge=1)
     autonomous_run_queue_limit: int = Field(default=100, ge=1)
     autonomous_visible_employee_limit: int = Field(default=8, ge=0)
+    autonomous_employee_auto_activation: bool = True
     autonomous_employee_release_evidence_bundle: str = (
         "~/.ghostap/autonomy/employee-release-evidence.jsonl"
     )

@@ -15,7 +15,7 @@ from ...card.shared import build_responsive_layout
 from ...slock_engine.slash_commands import is_slock_command
 from ...utils.errors import safe_error_message
 from ...utils.redact import redact_sensitive
-from ..user_cache import resolve_display_name
+from ..user_cache import resolve_display_name_nonblocking
 from .base import CardActionContext
 
 if TYPE_CHECKING:
@@ -1144,7 +1144,11 @@ class SlockTaskMixin:
 
         # (a) Get operator identity
         operator_id = get_current_sender_id() or ""
-        operator_display = resolve_display_name(operator_id, self.ctx.api_client_factory) if operator_id else ""
+        operator_display = (
+            resolve_display_name_nonblocking(operator_id, self.ctx.api_client_factory)
+            if operator_id
+            else ""
+        )
 
         # (b) Permission check — admin or team owner (unified)
         manager = self._get_engine_manager()

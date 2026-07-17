@@ -610,8 +610,9 @@ def test_team_batch_skips_nonmembers_before_employee_probe() -> None:
     )
     probed: list[str] = []
 
-    def probe(_projection, state, *, chat_id):
+    def probe(_projection, state, *, chat_id, probe_remote=True):
         assert chat_id == "oc_team"
+        assert probe_remote is False
         probed.append(state.agent_id)
         return RuntimeReadiness(True, ())
 
@@ -1831,6 +1832,118 @@ def _activate_employee(
     raise AssertionError("employee did not become ACTIVE")
 
 
+def test_new_employee_auto_activates_after_local_channel_ready(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, limit=1)
+    settings.autonomous_employee_auto_activation = True
+    channels = _Channels()
+    runtime = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    current = admitted
+    while time.monotonic() < deadline:
+        current = runtime.hire_service.get_state(admitted.intent_id) or current
+        if current.phase is HirePhase.ACTIVE:
+            break
+        time.sleep(0.02)
+
+    assert current.phase is HirePhase.ACTIVE
+    assert current.channel_generation == 1
+    assert current.activation_ingress_event_id == ""
+    assert current.activation_source == "channel_ready"
+    assert current.verification_consumed is True
+    event_types = [
+        event.event_type
+        for frame in runtime.journal_frames()
+        for event in frame.events
+        if event.aggregate_id == current.intent_id
+    ]
+    assert "hire.activation.automatic" in event_types
+    runtime.close()
+
+
+def test_restart_auto_activates_all_local_employees_on_new_generation(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, limit=2)
+    settings.autonomous_employee_auto_activation = True
+    first_channels = _Channels()
+    first = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_DistinctRegistrar(),
+        channel_supervisor=first_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert first.hire_service is not None
+    admitted = first.hire_service.start_hire(_request())
+    second = first.hire_service.start_hire(
+        replace(
+            _request(),
+            employee_name="Vega",
+            message_id="om_composition_second_auto",
+        )
+    )
+    deadline = time.monotonic() + 5
+    active_by_intent: dict[str, DurableHireState] = {}
+    while time.monotonic() < deadline:
+        active_by_intent = {
+            intent_id: state
+            for intent_id in (admitted.intent_id, second.intent_id)
+            if (state := first.hire_service.get_state(intent_id)) is not None
+            and state.phase is HirePhase.ACTIVE
+        }
+        if len(active_by_intent) == 2:
+            break
+        time.sleep(0.02)
+    assert len(active_by_intent) == 2
+    first.close()
+
+    restarted_channels = _Channels()
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        channel_supervisor=restarted_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert restarted.hire_service is not None
+    deadline = time.monotonic() + 7
+    recovered_by_intent: dict[str, DurableHireState] = {}
+    while time.monotonic() < deadline:
+        recovered_by_intent = {
+            intent_id: state
+            for intent_id in (admitted.intent_id, second.intent_id)
+            if (state := restarted.hire_service.get_state(intent_id)) is not None
+            and state.phase is HirePhase.ACTIVE
+            and state.channel_generation == 2
+        }
+        if len(recovered_by_intent) == 2:
+            break
+        time.sleep(0.05)
+
+    assert len(recovered_by_intent) == 2
+    assert sorted(item[3] for item in restarted_channels.started) == [2, 2]
+    automatic_events = [
+        event
+        for frame in restarted.journal_frames()
+        for event in frame.events
+        if event.event_type == "hire.activation.automatic"
+        and event.aggregate_id in {admitted.intent_id, second.intent_id}
+    ]
+    assert len(automatic_events) == 4
+    restarted.close()
+
+
 def test_production_factory_has_no_boolean_release_bypass() -> None:
     assert "release_evidence_ready" not in inspect.signature(EmployeeDepartmentRuntime.from_settings).parameters
     assert "release_trust_provider" in inspect.signature(EmployeeDepartmentRuntime.from_settings).parameters
@@ -2200,7 +2313,7 @@ def test_active_employee_probe_failure_blocks_execution_not_hiring(
     runtime.close()
 
 
-def test_group_history_permission_blocks_execution_and_team_routing(
+def test_group_history_permission_blocks_execution_but_not_team_admission(
     tmp_path: Path,
 ) -> None:
     channels = _Channels()
@@ -2239,14 +2352,17 @@ def test_group_history_permission_blocks_execution_and_team_routing(
         (active.agent_id, "oc_employee_team")
     ]
     assert runtime.team_service is not None
-    assert runtime.team_service._backend.list_active(  # noqa: SLF001
+    assert len(runtime.team_service._backend.list_active(  # noqa: SLF001
         active.tenant_key,
         "oc_employee_team",
-    ) == ()
+    )) == 1
+    assert source_factory.group_probed == [
+        (active.agent_id, "oc_employee_team")
+    ]
     runtime.close()
 
 
-def test_team_readiness_probes_the_target_chat_not_another_membership(
+def test_team_admission_uses_durable_membership_without_remote_group_probe(
     tmp_path: Path,
 ) -> None:
     channels = _Channels()
@@ -2281,12 +2397,9 @@ def test_team_readiness_probes_the_target_chat_not_another_membership(
     assert runtime.team_service is not None
     backend = runtime.team_service._backend  # noqa: SLF001
 
-    assert backend.list_active(active.tenant_key, "oc_bad_team") == ()
+    assert len(backend.list_active(active.tenant_key, "oc_bad_team")) == 1
     assert len(backend.list_active(active.tenant_key, "oc_good_team")) == 1
-    assert source_factory.group_probed[-2:] == [
-        (active.agent_id, "oc_bad_team"),
-        (active.agent_id, "oc_good_team"),
-    ]
+    assert source_factory.group_probed == []
     runtime.close()
 
 
@@ -3489,8 +3602,10 @@ def test_active_notification_retries_after_unacknowledged_reply(tmp_path: Path) 
 
 def test_new_hire_reports_action_required_after_bounded_retries(tmp_path: Path) -> None:
     statuses: list[str] = []
+    settings = _settings(tmp_path, limit=1)
+    settings.autonomous_employee_auto_activation = True
     runtime = _runtime(
-        _settings(tmp_path, limit=1),
+        settings,
         release_evidence_ready=True,
         registrar=_Registrar(),
         channel_supervisor=_Channels(),

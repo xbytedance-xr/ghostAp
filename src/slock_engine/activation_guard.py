@@ -34,6 +34,19 @@ ACTIVATION_ALLOWED = "allowed"
 """Reason string when activation is permitted."""
 
 
+def _normalize_user_ids(value: object) -> frozenset[str]:
+    """Normalize production id sets and legacy comma-separated test values."""
+    if isinstance(value, str):
+        return frozenset(uid.strip() for uid in value.split(",") if uid.strip())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset(
+            uid.strip()
+            for uid in value
+            if isinstance(uid, str) and uid.strip()
+        )
+    return frozenset()
+
+
 class ActivationGuard:
     """Guards auto-activation with permission checks and rate limiting.
 
@@ -122,8 +135,8 @@ class ActivationGuard:
             return False, ACTIVATION_DENIED_NOT_WHITELISTED
 
         # Admin users always allowed
-        admin_ids = getattr(settings, "admin_user_ids", "") or ""
-        if sender_id in {uid.strip() for uid in admin_ids.split(",") if uid.strip()}:
+        admin_ids = _normalize_user_ids(getattr(settings, "admin_user_ids", frozenset()))
+        if sender_id in admin_ids:
             return True, ACTIVATION_ALLOWED
 
         # Whitelist check

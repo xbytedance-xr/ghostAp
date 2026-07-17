@@ -503,6 +503,7 @@ class EmployeeDepartmentRuntime:
         self._monitor_task: asyncio.Task[None] | None = None
         self._activation_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._notification_async_lock: asyncio.Lock | None = None
+        self._automatic_activation = False
 
     @classmethod
     def from_settings(
@@ -597,6 +598,9 @@ class EmployeeDepartmentRuntime:
             else None
         )
         runtime._notification_status = notification_status
+        runtime._automatic_activation = (
+            getattr(settings, "autonomous_employee_auto_activation", False) is True
+        )
         try:
             runtime._start_loop()
             runtime._compose_execution_storage(settings)
@@ -780,6 +784,7 @@ class EmployeeDepartmentRuntime:
                 projection,
                 state,
                 chat_id=chat_id,
+                probe_remote=False,
             )
             if employee_readiness.ready:
                 ready.add(state.agent_id)
@@ -866,6 +871,7 @@ class EmployeeDepartmentRuntime:
         state: DurableHireState,
         *,
         chat_id: str | None,
+        probe_remote: bool = True,
     ) -> RuntimeReadiness:
         if chat_id is not None and (
             not isinstance(chat_id, str) or not chat_id.strip()
@@ -896,6 +902,12 @@ class EmployeeDepartmentRuntime:
                 return RuntimeReadiness(False, ("context_generation",))
             if chat_id is not None and chat_id not in employee.member_groups:
                 return RuntimeReadiness(False, ("context_group_membership",))
+            # Team admission is based on anchored workforce membership and the
+            # current READY Channel binding.  Live Context probes run when the
+            # task is dispatched, where failures remain fail-closed, but they
+            # must not block chat routing or overwrite durable group status.
+            if not probe_remote:
+                return RuntimeReadiness(True, ())
             if self._context_source_factory.probe(principal) is not True:
                 return RuntimeReadiness(False, ("context_credentials",))
             probe_group_history = getattr(
@@ -3435,8 +3447,8 @@ class EmployeeDepartmentRuntime:
         if state is None:
             return
         status = (
-            "ready"
-            if succeeded and state.phase is HirePhase.READY_PENDING_VERIFICATION
+            self._terminal_notification_status(state)
+            if succeeded
             else "action_required"
             if state.phase is HirePhase.ACTION_REQUIRED
             or any(
@@ -3835,6 +3847,12 @@ class EmployeeDepartmentRuntime:
             challenge = router.issue_challenge(binding)
             service.begin_activation_verification(challenge)
             self._challenges[state.intent_id] = challenge
+            if self._automatic_activation:
+                service.commit_automatic_activation(
+                    state.intent_id,
+                    activated_at=time.time(),
+                )
+                self._challenges.pop(state.intent_id, None)
             return
 
     async def _reconcile_slash(

@@ -27,7 +27,7 @@ from ...slock_engine.slash_commands import (
 from ...utils.errors import safe_error_message
 from ...utils.redact import redact_sensitive
 from ..emoji import EmojiReaction
-from ..user_cache import resolve_display_name
+from ..user_cache import resolve_display_name_nonblocking
 from .base import CardActionContext
 from .engine_base import BaseEngineHandler
 
@@ -38,6 +38,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXISTING_HIRE_APP_ID_RE = re.compile(r"cli_[A-Za-z0-9_-]{3,128}")
+_EXPLICIT_TEAM_TASK_RE = re.compile(
+    r"(?:实现|修复|优化|排查|分析|编写|补充|测试|重构|部署|发布|更新|修改|"
+    r"创建|生成|完成|执行|运行|评审|审查|检查|迁移|设计|开发|整理|总结|"
+    r"自我介绍|做个.{0,8}介绍|"
+    r"\b(?:implement|fix|optimize|debug|analy[sz]e|write|test|refactor|deploy|"
+    r"review|create|generate|migrate|design|develop)\b)",
+    re.IGNORECASE,
+)
+_SLOCK_CONTROL_INTENT_RE = re.compile(
+    r"^(?:(?:请|麻烦)(?:帮我)?|帮我)?(?:创建|新建)(?:一个|个|一名)?"
+    r"(?:角色|员工|团队|任务)(?:吧|吗)?[！!。.?？]?$|"
+    r"^(?:please\s+)?(?:create|new)\s+(?:a\s+)?"
+    r"(?:role|employee|team|task)[.!?]?$",
+    re.IGNORECASE,
+)
+_NON_IMPERATIVE_TEAM_TASK_RE = re.compile(
+    r"^(?:如何|怎么|怎样|为什么|是否|能否|可否|请问|不要|别|无需|不必|先别)|"
+    r"(?:吗|么|了吗|好了没)[？?]?$",
+    re.IGNORECASE,
+)
 
 
 def _normalize_existing_hire_app_id(value: object) -> str:
@@ -428,6 +448,18 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             if fast_result is not None:
                 intent_result = fast_result
             elif not is_chitchat or confidence < 0.7:
+                # A managed-chat task can be admitted using deterministic local
+                # classification.  Do not put the LLM NLI call in front of the
+                # durable employee Team path.
+                if self._is_explicit_team_task(text or "") and self._try_start_autonomous_collaboration_task(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    text=text,
+                    project=project,
+                    engine=engine,
+                    target_agent=target_agent,
+                ):
+                    return
                 # Ambiguous or likely-task — invoke LLM NLI for better classification
                 nli_loop = _get_nli_loop()
                 timeout_s = _positive_seconds(getattr(self.ctx.settings, "slock_nli_timeout", 5), 5.0)
@@ -579,8 +611,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                     self.reply_text(
                         message_id,
                         "⚠️ 当前群没有可执行员工，团队任务尚未受理。"
-                        "请先在员工 Bot 私聊发送 `/status` 完成当前 Channel 验证，"
-                        "再确认已通过 `/role add <名字>` 加入本群。",
+                        "服务会自动恢复本地员工 Channel；请稍后重试，"
+                        "若持续失败请检查该员工是否已通过 `/role add <名字>` 加入本群。",
                     )
                 else:
                     self.reply_text(
@@ -606,24 +638,24 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         return getattr(self.ctx.settings, "slock_autonomous_task_planning_enabled", False) is True
 
     @staticmethod
+    def _is_explicit_team_task(text: str) -> bool:
+        """Allow the no-LLM Team path only for explicit action requests."""
+        normalized = text.strip()
+        return bool(
+            normalized
+            and not normalized.startswith("/")
+            and _SLOCK_CONTROL_INTENT_RE.search(normalized) is None
+            and _NON_IMPERATIVE_TEAM_TASK_RE.search(normalized) is None
+            and _EXPLICIT_TEAM_TASK_RE.search(normalized)
+        )
+
+    @staticmethod
     def _looks_like_shell_text(text: str) -> bool:
-        """Mirror shell-like fast path so commands are not stolen by task planning."""
-        if not text:
-            return False
-        text_lower = text.lower().strip()
-        if not text_lower:
-            return False
-        first_word = text_lower.split()[0]
+        """Use the shared shell detector so task planning cannot steal commands."""
         try:
             from src.agent.intent_recognizer import IntentRecognizer
 
-            if first_word == "cd":
-                return True
-            if first_word in IntentRecognizer.SHELL_COMMANDS:
-                return True
-            if first_word in IntentRecognizer.COMMON_WORDS:
-                return False
-            return IntentRecognizer._looks_like_shell_token(first_word, text_lower)
+            return IntentRecognizer.looks_like_shell(text)
         except Exception:
             logger.debug("Shell-like check failed for Slock autonomous task planning", exc_info=True)
             return False
@@ -3621,7 +3653,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             _l1_memory_degraded = True
 
         # Resolve operator display name for notification card
-        operator_display = resolve_display_name(operator_id, self.ctx.api_client_factory) if operator_id else ""
+        operator_display = (
+            resolve_display_name_nonblocking(operator_id, self.ctx.api_client_factory)
+            if operator_id
+            else ""
+        )
 
         # Step 2: Send notification card to target group (best-effort)
         notification_card = build_agent_move_notification_card(
@@ -5035,7 +5071,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         # (a) Get operator identity
         operator_id = get_current_sender_id() or ""
-        operator_display = resolve_display_name(operator_id, self.ctx.api_client_factory) if operator_id else ""
+        operator_display = (
+            resolve_display_name_nonblocking(operator_id, self.ctx.api_client_factory)
+            if operator_id
+            else ""
+        )
 
         # (b) Permission check — admin or team owner (unified)
         manager = self._get_engine_manager()

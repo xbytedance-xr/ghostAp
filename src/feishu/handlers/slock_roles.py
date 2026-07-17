@@ -16,7 +16,7 @@ from ...card import CardBuilder
 from ...card.actions import dispatch as action_ids
 from ...model_selection import is_default_model_option
 from ...utils.redact import redact_sensitive
-from ..user_cache import resolve_display_name
+from ..user_cache import resolve_display_name_nonblocking
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -656,7 +656,11 @@ class SlockRoleMixin:
             _l1_memory_degraded = True
 
         # Resolve operator display name for notification card
-        operator_display = resolve_display_name(operator_id, self.ctx.api_client_factory) if operator_id else ""
+        operator_display = (
+            resolve_display_name_nonblocking(operator_id, self.ctx.api_client_factory)
+            if operator_id
+            else ""
+        )
 
         # Step 2: Send notification card to target group (best-effort)
         notification_card = build_agent_move_notification_card(

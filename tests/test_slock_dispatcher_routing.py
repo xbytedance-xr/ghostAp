@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 from concurrent.futures import Future
-from unittest.mock import ANY, MagicMock
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -1120,7 +1120,7 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
             ctx = FeishuRequestContext(
                 message_id=f"msg_{reason}",
                 chat_id=f"group_{reason}",
-                text="some task description",
+                text="请实现任务分派功能",
                 chat_type="group",
             )
 
@@ -1134,3 +1134,106 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
             client._reply_card.assert_called_once()
             client._submit_shell_command.assert_not_called()
             client._intent_recognizer.recognize.assert_not_called()
+
+
+class TestSmartShellBypassesPassiveSlock:
+    """SMART shell commands must never enter passive Slock classification."""
+
+    @staticmethod
+    def _make_client():
+        from src.agent.intent_recognizer import IntentRecognizer
+
+        client = MagicMock()
+        client.settings = MagicMock()
+        client.settings.slock_passive_mode = True
+        client.settings.thread_programming_enabled = False
+        client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+        client._is_topic_engine_context.return_value = False
+        client._is_deep_command.return_value = False
+        client._is_spec_command.return_value = False
+        client._is_workflow_command.return_value = False
+        client._is_slock_command.return_value = False
+        client._is_slock_managed_chat.return_value = False
+        client._should_auto_activate_slock.return_value = True
+        client._is_interceptable_command_match.return_value = False
+        client._is_worktree_awaiting_goal.return_value = False
+        client._pending_image_lock = MagicMock()
+        client._pending_image_only = set()
+        client._intent_recognizer = MagicMock(wraps=IntentRecognizer())
+        client._get_working_dir.return_value = "/repo"
+        return client
+
+    @pytest.mark.parametrize(
+        "text",
+        ["pwd", "ls -la", "echo hi", "git status", "./restart.sh rr"],
+    )
+    def test_unmanaged_shell_only_uses_shell_route(self, text):
+        from src.feishu.dispatcher import FeishuRequestContext, MessageDispatcher
+
+        client = self._make_client()
+        dispatcher = MessageDispatcher(client)
+
+        with (
+            patch("src.slock_engine.gateway.classify_message") as classify,
+            patch("src.slock_engine.gateway.attempt_autonomous_resolve") as resolve,
+        ):
+            dispatcher.process_request(
+                FeishuRequestContext(
+                    message_id="msg_shell",
+                    chat_id="group_unmanaged",
+                    text=text,
+                    shell_fast_tracked=True,
+                    chat_type="group",
+                )
+            )
+
+        classify.assert_not_called()
+        resolve.assert_not_called()
+        client._reply_card.assert_not_called()
+        client._auto_activate_slock.assert_not_called()
+        client._handle_slock_message.assert_not_called()
+        client._system_handler.execute_shell_and_reply.assert_called_once_with(
+            "msg_shell",
+            "group_unmanaged",
+            text,
+            "/repo",
+            None,
+        )
+        client._intent_recognizer.recognize.assert_called_once_with(text, "smart")
+
+    def test_clarification_card_is_terminal(self):
+        from src.agent.intent_recognizer import IntentResult, IntentType
+        from src.feishu.dispatcher import FeishuRequestContext, MessageDispatcher
+        from src.slock_engine.gateway import SlockClassification, SlockMessageClass
+
+        client = self._make_client()
+        client._intent_recognizer.recognize.return_value = IntentResult.single(
+            IntentType.SHELL_COMMAND,
+            data={"command": "这算任务吗"},
+        )
+        dispatcher = MessageDispatcher(client)
+        unresolved = MagicMock(resolved=False)
+
+        with (
+            patch(
+                "src.slock_engine.gateway.classify_message",
+                return_value=SlockClassification(SlockMessageClass.UNCERTAIN),
+            ),
+            patch(
+                "src.slock_engine.gateway.attempt_autonomous_resolve",
+                return_value=unresolved,
+            ),
+        ):
+            dispatcher.process_request(
+                FeishuRequestContext(
+                    message_id="msg_uncertain",
+                    chat_id="group_unmanaged",
+                    text="这算任务吗",
+                    chat_type="group",
+                )
+            )
+
+        client._reply_card.assert_called_once()
+        client._intent_recognizer.recognize.assert_not_called()
+        client._submit_shell_command.assert_not_called()
+        client._system_handler.execute_shell_and_reply.assert_not_called()

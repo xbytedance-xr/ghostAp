@@ -42,6 +42,8 @@ class MembershipRecord:
     current_effect_id: str
     requester_principal_id: str
     error_code: str = ""
+    confirmed_state: MembershipState | None = None
+    state_before_effect: MembershipState | None = None
 
 
 @dataclass(slots=True)
@@ -137,6 +139,8 @@ def _prepared(state: MembershipProjectionState, event: JournalEvent) -> None:
         membership_epoch=effect.membership_epoch,
         current_effect_id=effect.effect_id,
         requester_principal_id=effect.requester_principal_id,
+        confirmed_state=(record.confirmed_state if record is not None else None),
+        state_before_effect=(record.state if record is not None else None),
     )
 
 
@@ -209,6 +213,7 @@ def _committed(
         record,
         state=effect.desired_state,
         error_code="",
+        confirmed_state=effect.desired_state,
     )
 
 
@@ -241,9 +246,15 @@ def _action_required(state: MembershipProjectionState, event: JournalEvent) -> N
     except ValueError as exc:
         raise MembershipProjectionError("invalid membership action-required error") from exc
     state.effects[effect.effect_id] = updated
+    record = state.records[key]
+    preserve_confirmed = (
+        updated.error_code == "idempotency_observation_unknown"
+        and record.confirmed_state is effect.desired_state
+        and record.state_before_effect is effect.desired_state
+    )
     state.records[key] = replace(
-        state.records[key],
-        state=MembershipState.DEGRADED,
+        record,
+        state=(record.confirmed_state if preserve_confirmed else MembershipState.DEGRADED),
         error_code=updated.error_code,
     )
 

@@ -873,7 +873,8 @@ class IntentRecognizer:
             return bool(tail and tail not in {".", ".."})
         return False
 
-    def looks_like_shell(self, text: str) -> bool:
+    @classmethod
+    def looks_like_shell(cls, text: str) -> bool:
         """Public: does *text* look like a shell command invocation?
 
         True when the first token is in the SHELL_COMMANDS whitelist, is
@@ -893,11 +894,11 @@ class IntentRecognizer:
         first_word = text_lower.split()[0]
         if first_word == "cd":
             return True
-        if first_word in self.SHELL_COMMANDS:
+        if first_word in cls.SHELL_COMMANDS:
             return True
-        if first_word in self.COMMON_WORDS:
+        if first_word in cls.COMMON_WORDS:
             return False
-        return self._looks_like_shell_token(first_word, text_lower)
+        return cls._looks_like_shell_token(first_word, text_lower)
 
     def _get_fallback_intent(self, current_mode: str) -> IntentType:
         if current_mode == "coco":
