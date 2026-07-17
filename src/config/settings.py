@@ -690,10 +690,10 @@ class Settings(BaseSettings):
         le=3600,
         allow_inf_nan=False,
     )
-    # Keep the release default until the signed real-tenant persistent-team
-    # gates pass; local tests must not silently switch production behavior.
+    # Persistent coordination is the normal employee-team runtime. The legacy
+    # path remains an explicit rollback mode until real-tenant soak is signed.
     autonomous_team_runtime_mode: Literal["legacy_pipeline", "coordinator"] = (
-        "legacy_pipeline"
+        "coordinator"
     )
     autonomous_team_coordinator_tool: str = "coco"
     autonomous_team_coordinator_model: str = ""
@@ -746,11 +746,11 @@ class Settings(BaseSettings):
         ge=1,
         le=1_000_000,
     )
-    # ``shadow`` records digest-only actor-input comparisons while executing
-    # exactly one legacy call. ``actor`` never falls back to one-shot.
+    # ``actor`` is the normal employee runtime and never falls back to one-shot.
+    # ``shadow`` and ``legacy_one_shot`` remain explicit rollback diagnostics.
     autonomous_employee_runtime_mode: Literal[
         "legacy_one_shot", "shadow", "actor"
-    ] = "legacy_one_shot"
+    ] = "actor"
     autonomous_employee_session_idle_ttl_seconds: float = Field(
         default=900.0,
         gt=0,

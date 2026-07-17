@@ -932,9 +932,13 @@ class EmployeeKnowledgeService:
 
   证明 session reuse、identity recycle、workspace access、cancel/restart 和员工自有 Outbox 后，把 `autonomous_employee_runtime_mode` 默认改为 `actor`。
 
+  代码切流已完成：Settings、`.env.example` 和旧 settings 对象的组合根 fallback 均为 `actor`；本步骤仍等待真实租户证据后勾选。
+
 - [ ] **Step 3: Team 切到 coordinator**
 
   真实租户完成两名以上员工的分工、review、revision、群内贡献、主进程重启续跑和 final notify 后，把 `autonomous_team_runtime_mode` 默认改为 `coordinator`。
+
+  代码切流已完成：Settings、`.env.example` 和旧 settings 对象的组合根 fallback 均为 `coordinator`；本步骤仍等待真实租户证据后勾选。
 
 - [ ] **Step 4: 删除运行时 fallback**
 
@@ -956,6 +960,8 @@ class EmployeeKnowledgeService:
   Expected: all commands exit zero.
 
 - [ ] **Step 6: 真实租户验收**
+
+  使用 `scripts/validate_employee_tenant.py --template-out <capture.json>` 生成与 release、commit、service instance 和 staging/production tenant hash 绑定的验收表。模板全部断言初始为 false，以独立 QA 实测结果填写后，必须在 `GHOSTAP_EMPLOYEE_ACCEPTANCE_LIVE=1` 下显式 ingest；缺失项继续返回 pending。
 
   验收表必须记录以下证据，不能用 mock 代替：
 
@@ -1005,11 +1011,13 @@ class EmployeeKnowledgeService:
 
 ## 8. 方案自检清单
 
-- [ ] 所有新类型都有单一模块归属，未与现有 `AgentRuntime`、Channel Supervisor 或 Slock TaskQueue 混名。
-- [ ] 所有状态变更都能映射到 Journal event 和 frozen projection。
-- [ ] 所有外部 effect 在执行前已 fsync/anchor，终态前已 disposition。
-- [ ] 所有 Markdown 都可从 Journal/Blob 重建，删除整个 workspace 后 rebuild 结果相同。
-- [ ] 所有 source ref 都先 ACL 再解密，materializer 不扩大数据可见性。
-- [ ] `AGENTS.md`、bootstrap prompt、Codex global AGENTS 的 digest 一致。
-- [ ] 文档中没有未决占位语或未冻结的接口名。
-- [ ] `git diff --check`、文档引用测试和配置验证通过。
+- [x] 所有新类型都有单一模块归属，未与现有 `AgentRuntime`、Channel Supervisor 或 Slock TaskQueue 混名。
+- [x] 所有状态变更都能映射到 Journal event 和 frozen projection。
+- [x] 所有外部 effect 在执行前已 fsync/anchor，终态前已 disposition。
+- [x] 所有 Markdown 都可从 Journal/Blob 重建，删除整个 workspace 后 rebuild 结果相同。
+- [x] 所有 source ref 都先 ACL 再解密，materializer 不扩大数据可见性。
+- [x] `AGENTS.md`、bootstrap prompt、Codex global AGENTS 的 digest 一致。
+- [x] 文档中没有未决占位语或未冻结的接口名。
+- [x] `git diff --check`、文档引用测试和配置验证通过。
+
+本地证据来自 2189 个 Autonomous 测试、2622 个共享 Slock/飞书/卡片测试、workspace/knowledge/security/chaos 合同和配置摘要。真实租户行为仍只由 Task 12 Step 6 的外部证据判定。

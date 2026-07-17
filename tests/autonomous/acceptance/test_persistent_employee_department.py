@@ -20,10 +20,10 @@ _PERSISTENT_REAL_TENANT_GATES = {
 }
 
 
-def test_release_defaults_do_not_claim_unobserved_persistent_cutover() -> None:
+def test_release_defaults_start_the_persistent_employee_department() -> None:
     fields = Settings.model_fields
-    assert fields["autonomous_employee_runtime_mode"].default == "legacy_one_shot"
-    assert fields["autonomous_team_runtime_mode"].default == "legacy_pipeline"
+    assert fields["autonomous_employee_runtime_mode"].default == "actor"
+    assert fields["autonomous_team_runtime_mode"].default == "coordinator"
 
 
 def test_shadow_actor_and_coordinator_modes_are_explicit_and_non_fallback() -> None:

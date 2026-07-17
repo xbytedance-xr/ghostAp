@@ -358,8 +358,12 @@
        digest 对比；不一致只写 secret-free audit，不改变用户结果
      - 真实租户 manifest 新增 persistent actor、direct mention、Team review/revision、partial
        context、selective wake 与 Fire 六组门禁；1/10/50 soak 继续强制
-     - 当前默认仍为 `legacy_one_shot` / `legacy_pipeline`，固定流水线和 one-shot fallback
-       尚未删除；必须等真实租户签名证据通过后才能切换和移除
+     - 2026-07-17 默认已切到 `actor` / `coordinator`；旧 settings 对象缺字段时生产组合根也
+       选择持久模式，Actor/Coordinator 失败不会自动回退
+     - `legacy_one_shot` / `legacy_pipeline` 仅保留为显式紧急回滚；固定流水线和 one-shot
+       生产路径要等真实租户签名证据通过后删除
+     - 验收 CLI 可生成绑定 release/commit/service/tenant 的 fail-closed capture 模板，所有断言
+       初始为 false，不能被当作真实租户通过证据
      - staging + production Provisioning
      - 真实员工独立收发、桌面/移动 Slash、附件/话题/CardAction
      - 1/10/50 Bot soak、断线/重启/限流/故障注入

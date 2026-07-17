@@ -50,6 +50,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--live-results", type=Path)
+    parser.add_argument(
+        "--template-out",
+        type=Path,
+        help="create a tenant-bound, fail-closed live capture checklist",
+    )
     parser.add_argument("--checkpoint-out", type=Path)
     parser.add_argument("--release-id")
     parser.add_argument("--commit-sha")
@@ -89,6 +94,53 @@ def _load_checkpoint(path: Path | None) -> BundleCheckpoint | None:
     if path is None:
         return None
     return BundleCheckpoint.load(path)
+
+
+def _write_live_capture_template(
+    *,
+    path: Path,
+    manifest: EmployeeReleaseManifest,
+    binding: EmployeeEnvironmentBinding,
+) -> int:
+    """Create an exclusive checklist whose assertions cannot pass by default."""
+
+    records: list[dict[str, Any]] = []
+    for gate in manifest.gates:
+        details: dict[str, Any] = {
+            "assertions": {name: False for name in gate.required_assertions},
+        }
+        if gate.minimum_bot_count:
+            details["bot_count"] = 0
+        if gate.minimum_duration_seconds:
+            details["duration_seconds"] = 0
+        for metric in gate.required_zero_metrics:
+            details[metric] = None
+        for metric, _maximum, _exclusive in gate.maximum_metrics:
+            details[metric] = None
+        records.append(
+            {
+                "gate_id": gate.gate_id,
+                "status": EmployeeEvidenceStatus.PENDING.value,
+                "details": details,
+                "captured_at": 0,
+                "environment": gate.environment,
+                "tenant_hash": binding.tenant_hash_for(gate.environment),
+                "attestor": "",
+            }
+        )
+    payload = (json.dumps(records, ensure_ascii=False, indent=2) + "\n").encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(fd, payload[offset:])
+        os.fsync(fd)
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+    return len(records)
 
 
 def _ingest_live_capture(
@@ -150,6 +202,23 @@ def main(argv: list[str] | None = None) -> int:
                 release_available=False,
             )
             return 2
+
+        if args.template_out is not None:
+            if args.live or args.live_results is not None or args.checkpoint_out is not None:
+                raise ValueError("--template-out cannot be combined with live ingestion")
+            record_count = _write_live_capture_template(
+                path=args.template_out,
+                manifest=manifest,
+                binding=binding,
+            )
+            _emit(
+                status="template_created",
+                live_mode=False,
+                path=str(args.template_out),
+                record_count=record_count,
+                release_available=False,
+            )
+            return 0
 
         bundle = EmployeeEvidenceBundle(args.bundle)
         checkpoint = _load_checkpoint(args.checkpoint)

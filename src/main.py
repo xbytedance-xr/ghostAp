@@ -93,7 +93,19 @@ def _print_validate_summary(settings) -> None:
     print(f"  LOCK_UNDO_WINDOW_SECONDS = {_format_duration(settings.lock_undo_window_seconds)}")
     print()
 
-    # Group 3: 高级参数
+    # Group 3: 员工运行时
+    print("[员工运行时]")
+    print(
+        "  AUTONOMOUS_EMPLOYEE_RUNTIME_MODE = "
+        f"{settings.autonomous_employee_runtime_mode}"
+    )
+    print(
+        "  AUTONOMOUS_TEAM_RUNTIME_MODE     = "
+        f"{settings.autonomous_team_runtime_mode}"
+    )
+    print()
+
+    # Group 4: 高级参数
     print("[高级参数]")
     print(f"  CARD_DELIVERY_POOL_MAX_WORKERS = {settings.card.delivery_pool_max_workers} (threads)")
     print(f"  CARD_DELIVERY_API_TIMEOUT      = {_format_seconds(settings.card.delivery_api_timeout)}")

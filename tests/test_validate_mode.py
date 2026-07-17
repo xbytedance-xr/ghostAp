@@ -169,7 +169,27 @@ class TestValidateParameterSummary:
         mock_settings.card.max_chars = overrides.get("max_chars", 28000)
         mock_settings.card.session_lock_ttl = overrides.get("lock_ttl", 600)
         mock_settings.card.session_lock_max = overrides.get("lock_max", 10000)
+        mock_settings.autonomous_employee_runtime_mode = overrides.get(
+            "employee_runtime_mode", "actor"
+        )
+        mock_settings.autonomous_team_runtime_mode = overrides.get(
+            "team_runtime_mode", "coordinator"
+        )
         return mock_settings
+
+    def test_validate_prints_persistent_employee_runtime_modes(self, capsys):
+        from src.main import main
+
+        mock_settings = self._make_mock_settings()
+
+        with patch("src.main.get_settings", return_value=mock_settings):
+            with pytest.raises(SystemExit) as exc_info:
+                main(["--validate"])
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "AUTONOMOUS_EMPLOYEE_RUNTIME_MODE = actor" in captured.out
+        assert "AUTONOMOUS_TEAM_RUNTIME_MODE     = coordinator" in captured.out
 
     def test_validate_prints_session_idle_timeout(self, capsys):
         from src.main import main

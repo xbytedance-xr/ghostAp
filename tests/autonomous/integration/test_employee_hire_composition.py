@@ -583,6 +583,7 @@ def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -
     assert runtime.ingress_service is not None
     assert runtime.ingress_router is not None
     assert runtime.dispatch_coordinator is not None
+    assert runtime.dispatch_coordinator.employee_runtime is not None
     assert runtime.outbox_service is not None
     assert runtime.outbox_delivery is not None
     assert runtime.fire_service is not None
@@ -1584,6 +1585,8 @@ def test_runtime_recovers_team_before_it_can_start_dispatch(
     )
 
     assert observed == ["runtime", "team"]
+    assert runtime.team_service is not None
+    assert runtime.team_service.runtime_mode == "coordinator"
     runtime.close()
 
 

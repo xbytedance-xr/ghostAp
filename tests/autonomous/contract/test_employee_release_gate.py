@@ -560,6 +560,56 @@ def test_cli_live_mode_requires_explicit_opt_in_and_does_not_create_bundle(
     assert not bundle.exists()
 
 
+def test_cli_writes_bound_fail_closed_live_capture_template(
+    tmp_path: Path,
+    binding: EmployeeEnvironmentBinding,
+    manifest: EmployeeReleaseManifest,
+) -> None:
+    template = tmp_path / "employee-live-capture.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_employee_tenant.py",
+            "--manifest",
+            str(MANIFEST_PATH),
+            "--template-out",
+            str(template),
+            "--release-id",
+            binding.release_id,
+            "--commit-sha",
+            binding.commit_sha,
+            "--service-instance-id",
+            binding.service_instance_id,
+            "--staging-tenant-hash",
+            binding.staging_tenant_hash,
+            "--production-tenant-hash",
+            binding.production_tenant_hash,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    capture = json.loads(template.read_text(encoding="utf-8"))
+    assert result.returncode == 0
+    assert payload["status"] == "template_created"
+    assert template.stat().st_mode & 0o777 == 0o600
+    assert [item["gate_id"] for item in capture] == [gate.gate_id for gate in manifest.gates]
+    assert all(item["status"] == "pending" for item in capture)
+    assert all(item["captured_at"] == 0 for item in capture)
+    assert all(item["attestor"] == "" for item in capture)
+    assert all(
+        set(item["details"]["assertions"]) == set(gate.required_assertions)
+        and not any(item["details"]["assertions"].values())
+        for item, gate in zip(capture, manifest.gates, strict=True)
+    )
+    assert all(
+        item["tenant_hash"] == binding.tenant_hash_for(item["environment"])
+        for item in capture
+    )
+
+
 def test_live_capture_is_validated_as_a_batch_before_any_append(
     tmp_path: Path,
     manifest: EmployeeReleaseManifest,

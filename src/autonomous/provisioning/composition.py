@@ -799,7 +799,7 @@ class EmployeeDepartmentRuntime:
                 team_runtime_mode = getattr(
                     settings,
                     "autonomous_team_runtime_mode",
-                    "legacy_pipeline",
+                    "coordinator",
                 )
                 decision_provider = None
                 if team_runtime_mode == "coordinator":
@@ -2079,7 +2079,7 @@ class EmployeeDepartmentRuntime:
                 employee_runtime_mode=getattr(
                     settings,
                     "autonomous_employee_runtime_mode",
-                    "legacy_one_shot",
+                    "actor",
                 ),
                 employee_session_idle_ttl_seconds=getattr(
                     settings,
@@ -2091,7 +2091,7 @@ class EmployeeDepartmentRuntime:
                     if getattr(
                         settings,
                         "autonomous_employee_runtime_mode",
-                        "legacy_one_shot",
+                        "actor",
                     )
                     == "shadow"
                     else None
