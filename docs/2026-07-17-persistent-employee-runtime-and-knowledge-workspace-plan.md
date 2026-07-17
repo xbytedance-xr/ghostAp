@@ -980,9 +980,9 @@ class EmployeeKnowledgeService:
 
   记录最终默认模式、真实验收范围、剩余 hardened profile 风险和回滚方式。
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
-  Commit: `refactor(team): cut over to persistent employee actors`
+  Commit: `1297e279 refactor(team): cut over to persistent employee actors`
 
 ---
 

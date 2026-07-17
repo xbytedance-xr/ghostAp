@@ -2627,7 +2627,11 @@ class FeishuWSClient:
                 self.settings.app_id,
                 self.settings.app_secret,
                 event_handler=event_handler,
-                log_level=lark.LogLevel.DEBUG,
+                # The SDK logs its credential-bearing connection URL at
+                # INFO/DEBUG. Lifecycle health is observed through hooks, so
+                # WARNING keeps diagnostics without persisting access_key or
+                # ticket query parameters.
+                log_level=lark.LogLevel.WARNING,
                 on_activity=self._ws_health_monitor.record_activity,
             )
             try:

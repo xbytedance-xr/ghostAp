@@ -70,7 +70,7 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
 
     class DummyClient:
         def __init__(self, *args, **kwargs):
-            created.append(1)
+            created.append(kwargs)
 
         def start(self):
             # Simulate immediate exit (disconnect / internal error).
@@ -99,10 +99,10 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
     while time.time() < deadline and len(created) < 2:
         time.sleep(0.01)
 
-    assert len(created) >= 2
-
     client.close()
     t.join(timeout=1.0)
+    assert len(created) >= 2
+    assert all(item["log_level"] == ws.lark.LogLevel.WARNING for item in created)
     assert not t.is_alive()
 
 
