@@ -73,6 +73,7 @@ def _fixture(
     member_groups=(),
     admin_ids=frozenset({"ou_admin"}),
     team_active=True,
+    employee_state=EmployeeState.ACTIVE,
 ) -> _Fixture:
     writer = make_writer(tmp_path)
     state = ProjectionState()
@@ -82,7 +83,7 @@ def _fixture(
         aggregate_id=created.aggregate_id,
         payload={
             **created.payload,
-            "state": EmployeeState.ACTIVE.value,
+            "state": employee_state.value,
             "member_groups": list(member_groups),
         },
     )
@@ -396,6 +397,29 @@ def test_startup_audit_removes_stale_projected_membership_without_remote_mutatio
     assert summary.checked == 2
     assert summary.removed == 2
     assert summary.degraded == 0
+    assert fx.remote.mutations == []
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == ()
+
+
+@pytest.mark.parametrize(
+    "employee_state",
+    [EmployeeState.VALIDATING, EmployeeState.READY_PENDING_VERIFICATION],
+)
+def test_startup_audit_includes_channel_recovery_employee_states(
+    tmp_path,
+    employee_state,
+) -> None:
+    fx = _fixture(
+        tmp_path,
+        member_groups=("oc_team",),
+        employee_state=employee_state,
+    )
+    fx.remote.observed = False
+
+    summary = fx.service.reconcile_projected_memberships()
+
+    assert summary.checked == 1
+    assert summary.removed == 1
     assert fx.remote.mutations == []
     assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == ()
 

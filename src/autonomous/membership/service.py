@@ -29,6 +29,14 @@ from .projection import (
     reduce_membership_frame,
 )
 
+_AUDITABLE_EMPLOYEE_STATES = frozenset(
+    {
+        EmployeeState.ACTIVE,
+        EmployeeState.VALIDATING,
+        EmployeeState.READY_PENDING_VERIFICATION,
+    }
+)
+
 
 class MembershipServiceError(RuntimeError):
     pass
@@ -501,7 +509,7 @@ class EmployeeMembershipService:
                     employee.agent_id,
                 )
                 for employee in projection.employees.values()
-                if employee.state is EmployeeState.ACTIVE
+                if employee.state in _AUDITABLE_EMPLOYEE_STATES
                 and employee.worker_type is WorkerType.VISIBLE
                 for chat_id in employee.member_groups
             )
@@ -516,7 +524,7 @@ class EmployeeMembershipService:
                 if (
                     employee is None
                     or employee.tenant_key != tenant_key
-                    or employee.state is not EmployeeState.ACTIVE
+                    or employee.state not in _AUDITABLE_EMPLOYEE_STATES
                     or employee.worker_type is not WorkerType.VISIBLE
                     or chat_id not in employee.member_groups
                     or not employee.bot_principal_id
