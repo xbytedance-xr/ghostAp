@@ -631,6 +631,11 @@ class EmployeeDepartmentRuntime:
                     runtime._submit_manifest_reauthorization
                 ),
                 runtime_recovery_ready=False,
+                workspace_projector=(
+                    runtime._data.workspace_projector
+                    if runtime._data is not None
+                    else None
+                ),
             )
             runtime._service = service
             runtime._verification_router = VerificationRouter(nonce_consumer=service)

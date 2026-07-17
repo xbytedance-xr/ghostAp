@@ -147,6 +147,7 @@ class ProductionEmployeeHireService:
         manifest_reauthorization_submitter: Callable[[str], object] | None = None,
         manifest_reauthorization_timeout_seconds: float = 300.0,
         runtime_recovery_ready: bool = True,
+        workspace_projector: Any = None,
     ) -> None:
         if (
             isinstance(visible_employee_limit, bool)
@@ -180,6 +181,7 @@ class ProductionEmployeeHireService:
             manifest_reauthorization_timeout_seconds
         )
         self._runtime_recovery_ready = runtime_recovery_ready is True
+        self._workspace_projector = workspace_projector
         self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._activities: dict[str, asyncio.Task[DurableHireState]] = {}
         self._manifest_activities: dict[
@@ -1258,6 +1260,7 @@ class ProductionEmployeeHireService:
                     payload={"state": HirePhase.ACTIVE.value},
                 ),
             )
+            self._prepare_workspace_for_activation(state)
             self._synchronize_projection_to_journal_locked()
             state = self._require_hire(state.intent_id)
             last_frame = self._writer.get_last_frame()
@@ -1366,6 +1369,7 @@ class ProductionEmployeeHireService:
                     payload={"state": HirePhase.ACTIVE.value},
                 ),
             )
+            self._prepare_workspace_for_activation(state)
             last_frame = self._writer.get_last_frame()
             writer_sequence = 0 if last_frame is None else last_frame.sequence
             writer_hash = "" if last_frame is None else last_frame.frame_hash
@@ -1674,6 +1678,8 @@ class ProductionEmployeeHireService:
             raise HireAdmissionError("terminal hire phase has unresolved effects")
         if state.phase is phase:
             return state
+        if phase is HirePhase.ACTIVE:
+            self._prepare_workspace_for_activation(state)
         try:
             commit_workforce_events_unlocked(
                 self._writer,
@@ -1690,6 +1696,16 @@ class ProductionEmployeeHireService:
             raise HireAdmissionError("hire phase transition rejected") from exc
         self._hire_projection = HireProjection.rebuild(self._writer.replay())
         return self._require_hire(state.intent_id)
+
+    def _prepare_workspace_for_activation(self, state: DurableHireState) -> None:
+        projector = self._workspace_projector
+        if projector is None:
+            return
+        try:
+            snapshot = projector.rebuild(state.tenant_key, state.agent_id)
+            projector.verify(snapshot)
+        except Exception:
+            raise HireAdmissionError("employee workspace projection failed") from None
 
     def _bind_principal(
         self,

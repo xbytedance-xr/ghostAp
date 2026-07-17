@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..journal.writer import JournalWriter
+from ..workspace import EmployeeWorkspaceProjector
 from .facades import EmployeeDocumentMaterializer, EmployeeMemoryFacade
 from .keyring import EmployeeDataKeyring, build_employee_data_storage
 from .materializer import DailyHistoryMaterializer
@@ -40,6 +41,7 @@ class EmployeeDataComposition:
     query: HistoryRangeQuery
     memory_query: EmployeeMemoryQuery
     context_factory: EmployeeDataRequestContextFactory
+    workspace_projector: EmployeeWorkspaceProjector | None = None
 
     def record_terminal(
         self,
@@ -193,6 +195,8 @@ class EmployeeDataComposition:
                 agent_id,
                 self.service.read_blob,
             )
+        if self.workspace_projector is not None:
+            self.workspace_projector.rebuild_all()
 
     def gc_unreferenced_blobs(self) -> int:
         """Quarantine blobs not referenced by any projected record or document."""
@@ -255,6 +259,12 @@ def build_employee_data_composition(
         context_factory=context_factory,
         audit_port=service,
     )
+    from ..journal.projections import ProjectionRepository
+
+    workspace_projector = EmployeeWorkspaceProjector(
+        agents_root,
+        state_provider=lambda: ProjectionRepository().rebuild(writer.replay()),
+    )
     return EmployeeDataComposition(
         service=service,
         state=state,
@@ -264,4 +274,5 @@ def build_employee_data_composition(
         query=query,
         memory_query=memory_query,
         context_factory=context_factory,
+        workspace_projector=workspace_projector,
     )

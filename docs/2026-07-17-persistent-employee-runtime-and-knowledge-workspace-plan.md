@@ -432,35 +432,35 @@ class EmployeeWorkspaceProjector:
     def verify(self, snapshot: EmployeeWorkspaceSnapshot) -> None: ...
 ```
 
-- [ ] **Step 1: 写布局、权限和 no-follow 失败测试**
+- [x] **Step 1: 写布局、权限和 no-follow 失败测试**
 
   覆盖非法 agent ID、symlink 中间目录、文件越界、过宽权限、短写、rename 前后 crash 和重复 rebuild。
 
-- [ ] **Step 2: 写内容测试**
+- [x] **Step 2: 写内容测试**
 
   验证新员工目录包含本文冻结的文件；`AGENTS.md <= 8192 bytes`；不出现 credential ref、app secret、token、`.env` 值或原始 private message。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/security/test_employee_workspace_projection.py tests/autonomous/unit/test_employee_workspace_lint.py -q`
 
   Expected: FAIL because `src.autonomous.workspace` does not exist.
 
-- [ ] **Step 4: 实现确定性模板和原子 projector**
+- [x] **Step 4: 实现确定性模板和原子 projector**
 
   使用逐组件 dir-fd、`O_NOFOLLOW`、临时文件、fsync、rename；模板只接收类型化 projection，不接收任意 dict。
 
-- [ ] **Step 5: 接入 Hire 激活和全量 rebuild**
+- [x] **Step 5: 接入 Hire 激活和全量 rebuild**
 
   员工进入 ACTIVE 前生成并 lint workspace；启动恢复时从 workforce/data/team projection 重建，不扫描 Markdown 反推状态。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/security/test_employee_workspace_projection.py tests/autonomous/unit/test_employee_workspace_lint.py tests/autonomous/integration/test_employee_hire_composition.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
   Commit: `feat(workspace): project durable employee workspaces`
 

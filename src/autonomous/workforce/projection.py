@@ -681,10 +681,37 @@ class EmployeeIdentityMaterializer:
             )
         else:
             payload.update({"app_id": "", "credential_ref": "", "scopes": []})
-        return self._atomic_write(agent_id, payload)
+        path = self._atomic_write(agent_id, payload)
+        self._materialize_workspace(state, employee)
+        return path
 
     def materialize_all(self, state: WorkforceProjectionState) -> list[Path]:
         return [self.materialize(state, agent_id) for agent_id in sorted(state.employees)]
+
+    def _materialize_workspace(
+        self,
+        state: WorkforceProjectionState,
+        employee: EmployeeDefinition,
+    ) -> None:
+        from ..workspace import EmployeeWorkspaceProjector, EmployeeWorkspaceSource
+
+        EmployeeWorkspaceProjector(self._root).project(
+            EmployeeWorkspaceSource(
+                tenant_key=employee.tenant_key,
+                agent_id=employee.agent_id,
+                name=employee.name,
+                role=employee.role,
+                persona=employee.persona,
+                personality_traits=employee.personality_traits,
+                capabilities=employee.capabilities,
+                permissions=employee.permissions,
+                tool=employee.tool,
+                model=employee.model,
+                identity_version=employee.aggregate_version,
+                projection_sequence=int(getattr(state, "cursor_sequence", 0)),
+                projection_hash=str(getattr(state, "cursor_hash", "")),
+            )
+        )
 
     def _atomic_write(self, agent_id: str, payload: dict) -> Path:
         if _AGENT_ID_PATTERN.fullmatch(agent_id) is None:
