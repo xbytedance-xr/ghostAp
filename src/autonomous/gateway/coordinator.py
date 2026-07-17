@@ -24,7 +24,7 @@ from ..data.models import (
     ExecutionHistoryRecordV1,
     SafeExecutionSummary,
 )
-from ..data.ports import EmployeeDataSink, PublishEmployeeDocumentCommand
+from ..data.ports import AuthenticatedExecutionTerminal, EmployeeDataSink, PublishEmployeeDocumentCommand
 from ..data.service import EmployeeDataService
 from ..domain import EmployeeState, WorkerType
 from ..ingress.models import parse_canonical_utc
@@ -1175,6 +1175,17 @@ class EmployeeDispatchCoordinator:
         )
         for command in commands:
             sink.publish_document(command)
+        enqueue_knowledge = getattr(sink, "enqueue_knowledge_terminal", None)
+        if callable(enqueue_knowledge):
+            enqueue_knowledge(
+                AuthenticatedExecutionTerminal(
+                    attempt_id=binding.attempt_id,
+                    status="completed",
+                    request_text=request_text,
+                    result_text=result.output,
+                    error_detail="",
+                )
+            )
 
     def _recover_legacy_router_dispatches(self) -> int:
         """Dispose Router-only dispatches without ever re-running ACP.

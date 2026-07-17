@@ -662,43 +662,43 @@ class EmployeeKnowledgeService:
     def recover(self) -> int: ...
 ```
 
-- [ ] **Step 1: 写 source hash 和幂等摄入测试**
+- [x] **Step 1: 写 source hash 和幂等摄入测试**
 
   同 source/hash 不重复调用编译器；内容变化产生新 generation；queue 在重启后继续；每员工串行摄入避免并发覆盖 index。
 
-- [ ] **Step 2: 写安全测试**
+- [x] **Step 2: 写安全测试**
 
   prompt injection 不能修改 schema/identity/permissions；credential/PII/原始 private message/hidden reasoning 不能出现在 Markdown；越权 source ID 在读取 Blob 前被拒绝。
 
-- [ ] **Step 3: 写 Wiki lint 测试**
+- [x] **Step 3: 写 Wiki lint 测试**
 
   检测 broken wikilink、orphan page、缺失 source、hash 不匹配、重复 page ID、frontmatter schema 错误、contradiction、stale index 和超大 AGENTS。
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_knowledge_compiler.py tests/autonomous/unit/test_employee_knowledge_query.py tests/autonomous/security/test_employee_knowledge_redaction.py tests/autonomous/chaos/test_employee_knowledge_recovery.py -q`
 
   Expected: FAIL because knowledge package/data kinds do not exist.
 
-- [ ] **Step 5: 扩展 canonical data kinds**
+- [x] **Step 5: 扩展 canonical data kinds**
 
   增加 `KNOWLEDGE_PAGE`、`KNOWLEDGE_INDEX`、`KNOWLEDGE_REVIEW`，内容写加密 Blob；Markdown projector 只消费已提交文档。
 
-- [ ] **Step 6: 实现两阶段编译**
+- [x] **Step 6: 实现两阶段编译**
 
   第一阶段只输出受 schema 限制的 claims/source links；第二阶段更新页面和互链。任何结构不合法、来源缺失或权限越界都进入 review，不直接写 Wiki。
 
-- [ ] **Step 7: 实现 query-first-index**
+- [x] **Step 7: 实现 query-first-index**
 
   先读取 `wiki/index.md`/类型化索引，再按 page ID 读取正文；结果必须返回 page/source citations。首期使用标准全文 token 化和 wikilink 邻接扩展，不增加向量依赖。
 
-- [ ] **Step 8: 验证**
+- [x] **Step 8: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_knowledge_compiler.py tests/autonomous/unit/test_employee_knowledge_query.py tests/autonomous/security/test_employee_knowledge_redaction.py tests/autonomous/chaos/test_employee_knowledge_recovery.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
   Commit: `feat(knowledge): compile employee history into a wiki`
 

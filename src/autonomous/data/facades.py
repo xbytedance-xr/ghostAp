@@ -55,6 +55,15 @@ class EmployeeDocumentMaterializer:
         elif kind is DataKind.REASONING:
             safe_id = hashlib.sha256(source_id.encode()).hexdigest()
             relative = f"reasoning/{safe_id}.json"
+        elif kind is DataKind.KNOWLEDGE_PAGE:
+            if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_id) is None:
+                raise ValueError("invalid knowledge page id")
+            relative = f"workspace/wiki/{source_id}.md"
+        elif kind is DataKind.KNOWLEDGE_INDEX:
+            relative = "workspace/wiki/index.md"
+        elif kind is DataKind.KNOWLEDGE_REVIEW:
+            safe_id = hashlib.sha256(source_id.encode()).hexdigest()
+            relative = f"knowledge/review/{safe_id}.json"
         else:
             raise ValueError(f"unsupported kind: {kind}")
         return DocumentPath(

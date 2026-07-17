@@ -42,6 +42,7 @@ class EmployeeDataComposition:
     memory_query: EmployeeMemoryQuery
     context_factory: EmployeeDataRequestContextFactory
     workspace_projector: EmployeeWorkspaceProjector | None = None
+    knowledge_service: Any = None
 
     def record_terminal(
         self,
@@ -112,7 +113,11 @@ class EmployeeDataComposition:
             )
             if command.kind is DataKind.MEMORY_SUMMARY
             else command.source_id
-            if command.kind is DataKind.REASONING
+            if command.kind in {
+                DataKind.REASONING,
+                DataKind.KNOWLEDGE_PAGE,
+                DataKind.KNOWLEDGE_REVIEW,
+            }
             else command.kind.value
         )
         identity = command.idempotency_key or secrets.token_hex(16)
@@ -179,11 +184,23 @@ class EmployeeDataComposition:
             content_hash=content_hash,
         )
 
+    def enqueue_knowledge_terminal(
+        self,
+        terminal: AuthenticatedExecutionTerminal,
+    ) -> str:
+        if self.knowledge_service is None:
+            raise RuntimeError("employee knowledge service is unavailable")
+        return self.knowledge_service.enqueue_terminal(terminal)
+
     def rebuild_all(self) -> None:
         """Full projection rebuild from Journal replay."""
         snapshot = self.service.rebuild_projection()
         self.service.verify_live_blobs()
         self.history_materializer.materialize_all(snapshot)
+        if self.workspace_projector is not None:
+            # Rebuild the deterministic control skeleton first; committed
+            # knowledge documents then overlay only managed Wiki leaves.
+            self.workspace_projector.rebuild_all()
         agent_ids = {
             metadata.agent_id
             for metadata in snapshot.employee_documents.values()
@@ -195,8 +212,8 @@ class EmployeeDataComposition:
                 agent_id,
                 self.service.read_blob,
             )
-        if self.workspace_projector is not None:
-            self.workspace_projector.rebuild_all()
+        if self.knowledge_service is not None:
+            self.knowledge_service.project_all()
 
     def gc_unreferenced_blobs(self) -> int:
         """Quarantine blobs not referenced by any projected record or document."""
@@ -204,6 +221,8 @@ class EmployeeDataComposition:
 
     def close(self) -> None:
         """Release the owned encrypted BlobStore; the shared Writer is external."""
+        if self.knowledge_service is not None:
+            self.knowledge_service.close()
         self.service.close()
 
 
@@ -265,7 +284,7 @@ def build_employee_data_composition(
         agents_root,
         state_provider=lambda: ProjectionRepository().rebuild(writer.replay()),
     )
-    return EmployeeDataComposition(
+    composition = EmployeeDataComposition(
         service=service,
         state=state,
         history_materializer=history_mat,
@@ -276,3 +295,29 @@ def build_employee_data_composition(
         context_factory=context_factory,
         workspace_projector=workspace_projector,
     )
+    from ..knowledge.service import EmployeeKnowledgeService
+
+    principals = frozenset(admin_principal_ids) | {
+        main_bot_app_id,
+        "main_bot",
+    }
+
+    def authorize_knowledge(request: Any, _source_id: str) -> bool:
+        if request.requester_principal_id in principals:
+            return True
+        owners = {
+            item.owner_principal_id
+            for item in state.employee_documents.values()
+            if item.tenant_key == request.tenant_key
+            and item.agent_id == request.agent_id
+            and not item.tombstoned
+        }
+        return request.requester_principal_id in owners
+
+    composition.knowledge_service = EmployeeKnowledgeService(
+        writer=writer,
+        data_composition=composition,
+        authorizer=authorize_knowledge,
+        agents_root=agents_root,
+    )
+    return composition

@@ -13,7 +13,16 @@ _LABEL_FIELDS = frozenset(
     {"tenant_key", "owner_principal_id", "classification", "purpose", "resource_id", "schema_version"}
 )
 _PURPOSES = frozenset(
-    {"execution_history", "l1_memory", "memory_summary", "skill_profile", "reasoning"}
+    {
+        "execution_history",
+        "l1_memory",
+        "memory_summary",
+        "skill_profile",
+        "reasoning",
+        "knowledge_page",
+        "knowledge_index",
+        "knowledge_review",
+    }
 )
 _SECRET_NAME = re.compile(r"(?i)(secret|token|password|credential|api[_-]?key)")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")

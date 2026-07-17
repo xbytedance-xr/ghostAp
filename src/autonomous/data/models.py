@@ -127,6 +127,9 @@ class DataKind(str, Enum):
     MEMORY_SUMMARY = "memory_summary"
     SKILL_PROFILE = "skill_profile"
     REASONING = "reasoning"
+    KNOWLEDGE_PAGE = "knowledge_page"
+    KNOWLEDGE_INDEX = "knowledge_index"
+    KNOWLEDGE_REVIEW = "knowledge_review"
 
 
 @dataclass(frozen=True)
@@ -626,9 +629,14 @@ class EmployeeDataDocumentV1:
         object.__setattr__(self, "predecessor_hash", digest)
         if self.content_type not in _CONTENT_TYPES:
             raise ValueError("unsupported content_type")
-        if self.kind in {DataKind.L1_MEMORY, DataKind.MEMORY_SUMMARY}:
+        if self.kind in {
+            DataKind.L1_MEMORY,
+            DataKind.MEMORY_SUMMARY,
+            DataKind.KNOWLEDGE_PAGE,
+            DataKind.KNOWLEDGE_INDEX,
+        }:
             if self.content_type != "text/markdown":
-                raise ValueError("memory documents must use text/markdown")
+                raise ValueError("Markdown documents must use text/markdown")
         elif self.content_type != "application/json":
             raise ValueError("structured documents must use application/json")
         object.__setattr__(self, "content_hash", _sha256(self.content_hash, "content_hash"))
@@ -653,7 +661,11 @@ class EmployeeDataDocumentV1:
         else:
             if chat_id or thread:
                 raise ValueError("chat metadata is only valid for memory_summary")
-            if self.kind in {DataKind.L1_MEMORY, DataKind.SKILL_PROFILE} and self.source_id != self.kind.value:
+            if self.kind in {
+                DataKind.L1_MEMORY,
+                DataKind.SKILL_PROFILE,
+                DataKind.KNOWLEDGE_INDEX,
+            } and self.source_id != self.kind.value:
                 raise ValueError("document source_id does not match kind")
 
     @staticmethod
