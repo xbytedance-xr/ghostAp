@@ -1148,6 +1148,7 @@ class EmployeeChannelSupervisor:
                         runtime.status,
                         state=ChannelProcessState.STARTING,
                         ready_at=None,
+                        ready_metadata={"reconnecting_at": time.time()},
                         error_code="channel-reconnecting",
                     )
                     runtime.ready.clear()

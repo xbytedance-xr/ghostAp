@@ -923,6 +923,10 @@ def test_reconnect_event_revokes_readiness_until_new_observed_ready(
         assert reconnecting.state is ChannelProcessState.STARTING
         assert reconnecting.ready_at is None
         assert reconnecting.error_code == "channel-reconnecting"
+        assert isinstance(
+            reconnecting.ready_metadata.get("reconnecting_at"),
+            float,
+        )
         assert not runtime.ready.is_set()
 
         supervisor._accept_frame(

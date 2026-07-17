@@ -122,6 +122,7 @@ from .verification import (
 logger = logging.getLogger(__name__)
 
 _RECOVERY_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6)
+_CHANNEL_RECONNECT_GRACE_SECONDS = 180.0
 
 
 def _stable_feishu_uuid(value: str) -> str:
@@ -4273,12 +4274,31 @@ class EmployeeDepartmentRuntime:
                             channel_status is not None
                             and channel_status.generation
                             == state.channel_generation
-                            and channel_status.state
-                            in {
-                                ChannelProcessState.CRASHED,
-                                ChannelProcessState.FAILED,
-                                ChannelProcessState.STOPPED,
-                            }
+                            and (
+                                channel_status.state
+                                in {
+                                    ChannelProcessState.CRASHED,
+                                    ChannelProcessState.FAILED,
+                                    ChannelProcessState.STOPPED,
+                                }
+                                or (
+                                    channel_status.state
+                                    is ChannelProcessState.STARTING
+                                    and channel_status.error_code
+                                    == "channel-reconnecting"
+                                    and isinstance(
+                                        channel_status.ready_metadata.get(
+                                            "reconnecting_at"
+                                        ),
+                                        (int, float),
+                                    )
+                                    and time.time()
+                                    - channel_status.ready_metadata[
+                                        "reconnecting_at"
+                                    ]
+                                    >= _CHANNEL_RECONNECT_GRACE_SECONDS
+                                )
+                            )
                         ):
                             service.begin_channel_revalidation(
                                 state.intent_id,

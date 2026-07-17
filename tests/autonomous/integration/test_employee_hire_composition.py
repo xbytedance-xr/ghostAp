@@ -3496,6 +3496,48 @@ def test_notification_lock_rechecks_phase_before_sending() -> None:
     assert calls == []
 
 
+def test_channel_monitor_revalidates_stalled_reconnect(monkeypatch) -> None:
+    runtime = EmployeeDepartmentRuntime()
+    state = DurableHireState(
+        intent_id="hire_reconnecting",
+        agent_id="agt_reconnecting",
+        phase=HirePhase.ACTIVE,
+        channel_generation=7,
+    )
+    revalidations: list[tuple[str, int]] = []
+    submissions: list[str] = []
+
+    class Service:
+        @staticmethod
+        def list_states():
+            return (state,)
+
+        @staticmethod
+        def begin_channel_revalidation(intent_id: str, *, observed_generation: int):
+            revalidations.append((intent_id, observed_generation))
+
+    runtime._service = Service()
+    runtime._channels = SimpleNamespace(
+        status=lambda _agent_id: SimpleNamespace(
+            agent_id=state.agent_id,
+            generation=state.channel_generation,
+            state=ChannelProcessState.STARTING,
+            error_code="channel-reconnecting",
+            ready_metadata={"reconnecting_at": time.time() - 181.0},
+        )
+    )
+    runtime._submit_intent = submissions.append  # type: ignore[method-assign]
+
+    async def stop_monitor(_seconds: float) -> None:
+        runtime._closing = True
+
+    monkeypatch.setattr(asyncio, "sleep", stop_monitor)
+    asyncio.run(runtime._monitor_channels())
+
+    assert revalidations == [(state.intent_id, state.channel_generation)]
+    assert submissions == [state.intent_id]
+
+
 def test_ready_notification_retries_after_runtime_restart(tmp_path: Path) -> None:
     settings = _settings(tmp_path, limit=1)
     first_attempts: list[str] = []
