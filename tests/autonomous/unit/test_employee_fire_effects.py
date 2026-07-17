@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
-from src.autonomous.provisioning.fire_effects import AtomicEmployeeArchive
+from src.autonomous.provisioning.fire_effects import (
+    AtomicEmployeeArchive,
+    ExecutionQuiesceEffect,
+)
 from src.autonomous.provisioning.fire_state import DurableFireState
 
 
@@ -103,3 +107,14 @@ def test_atomic_archive_rejects_symlink_content(tmp_path):
 
     assert source.is_dir()
     assert not (root / ".archive" / "agt_alpha").exists()
+
+
+def test_execution_quiesce_retires_actor_before_later_fire_effects() -> None:
+    retired = []
+    runtime = SimpleNamespace(retire_employee=lambda agent_id: retired.append(agent_id))
+    coordinator = SimpleNamespace(
+        state=SimpleNamespace(attempts={}),
+        employee_runtime=runtime,
+    )
+    ExecutionQuiesceEffect(coordinator, grace_seconds=0).execute(_state())
+    assert retired == ["agt_alpha"]

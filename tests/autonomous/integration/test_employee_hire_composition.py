@@ -1552,7 +1552,7 @@ def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -
     runtime.close()
 
 
-def test_team_recovery_runs_before_runtime_can_start_dispatch(
+def test_runtime_recovers_team_before_it_can_start_dispatch(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1561,18 +1561,19 @@ def test_team_recovery_runs_before_runtime_can_start_dispatch(
     original_runtime_recover = EmployeeDepartmentRuntime.recover
 
     def recover_team(service):
+        assert observed == ["runtime"]
         observed.append("team")
         return original_team_recover(service)
 
     def recover_runtime(runtime):
-        assert observed == ["team"]
         observed.append("runtime")
         return original_runtime_recover(runtime)
 
     monkeypatch.setattr(EmployeeTeamService, "recover", recover_team)
     monkeypatch.setattr(EmployeeDepartmentRuntime, "recover", recover_runtime)
-    runtime = EmployeeDepartmentRuntime.from_settings(
+    runtime = _runtime(
         _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
         registrar=_Registrar(),
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
@@ -1582,7 +1583,7 @@ def test_team_recovery_runs_before_runtime_can_start_dispatch(
         group_memory_backend=_GroupMemory(),
     )
 
-    assert observed == ["team", "runtime"]
+    assert observed == ["runtime", "team"]
     runtime.close()
 
 

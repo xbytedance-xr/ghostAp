@@ -831,35 +831,35 @@ class EmployeeKnowledgeService:
 - 恢复顺序固定为 Journal/data projection -> workspace projection -> group ledger -> actor mailboxes -> Team coordinator -> employee Channels -> admission open。
 - 关闭顺序反向：admission -> coordinators -> actors/session -> outbox drain -> Channels -> data -> Journal。
 
-- [ ] **Step 1: 写启动依赖测试**
+- [x] **Step 1: 写启动依赖测试**
 
   workspace lint 失败、knowledge Blob 缺失、assignment checkpoint 损坏、actor 未恢复时不得对外报告 employee READY。
 
-- [ ] **Step 2: 写旧员工迁移测试**
+- [x] **Step 2: 写旧员工迁移测试**
 
   从现有 identity/memory/history projection 创建 workspace；不把 legacy mutable files 当事实源；重复迁移幂等；symlink/冲突目录 fail-close。
 
-- [ ] **Step 3: 写重启矩阵**
+- [x] **Step 3: 写重启矩阵**
 
   覆盖 1/10/50 员工的 cold ready、部分 warm session、active TeamRun、pending knowledge ingest、Channel reconnect 和 Fire 并发。
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/integration/test_employee_runtime_startup_order.py tests/autonomous/chaos/test_employee_runtime_restart_matrix.py tests/autonomous/integration/test_employee_fire_authority.py tests/autonomous/unit/test_employee_fire_effects.py -q`
 
   Expected: FAIL until composition owns the new services.
 
-- [ ] **Step 5: 接入 Supervisor**
+- [x] **Step 5: 接入 Supervisor**
 
   Actor 和 Coordinator 不各自扫描 Journal；共享一次投影/快照，按 generation fence 启动。Fire 先关闭 mailbox、取消 assignment、关闭 session，再撤权/归档 workspace。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/integration/test_employee_runtime_startup_order.py tests/autonomous/chaos/test_employee_runtime_restart_matrix.py tests/autonomous/integration/test_employee_fire_authority.py tests/autonomous/unit/test_employee_fire_effects.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
   Commit: `feat(runtime): recover employee actors and knowledge`
 

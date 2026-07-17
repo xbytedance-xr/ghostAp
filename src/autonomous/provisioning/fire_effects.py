@@ -37,6 +37,10 @@ class ExecutionQuiesceEffect:
         deadline = time.monotonic() + self._grace
         while time.monotonic() < deadline and self.observe(state) is not True:
             time.sleep(0.05)
+        runtime = getattr(self._coordinator, "employee_runtime", None)
+        retire = getattr(runtime, "retire_employee", None)
+        if callable(retire):
+            retire(state.agent_id)
 
     def observe(self, state: DurableFireState) -> bool | None:
         if self._coordinator is None:

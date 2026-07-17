@@ -12,13 +12,85 @@ import logging
 import os
 import signal
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from ..domain import new_id
 
 logger = logging.getLogger(__name__)
+
+EMPLOYEE_RECOVERY_ORDER = (
+    "journal_projection",
+    "data_projection",
+    "workspace_projection",
+    "group_ledger",
+    "actor_mailboxes",
+    "team_coordinator",
+    "employee_channels",
+    "admission_open",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeRecoverySnapshot:
+    frames: tuple[Any, ...]
+    head_sequence: int
+    head_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeLifecycleReport:
+    ready: bool
+    completed_stages: tuple[str, ...]
+    blocker: str = ""
+
+
+class EmployeeLifecycleSupervisor:
+    """One ordered gate for employee recovery and reverse-order shutdown."""
+
+    def __init__(
+        self,
+        recoverers: Mapping[str, Callable[[EmployeeRecoverySnapshot], object]],
+        closers: Mapping[str, Callable[[], object]] | None = None,
+    ) -> None:
+        missing = set(EMPLOYEE_RECOVERY_ORDER) - set(recoverers)
+        if missing:
+            raise ValueError("employee recovery stage is missing")
+        self._recoverers = dict(recoverers)
+        self._closers = dict(closers or {})
+        self._report = EmployeeLifecycleReport(False, ())
+
+    @property
+    def report(self) -> EmployeeLifecycleReport:
+        return self._report
+
+    def recover(self, snapshot: EmployeeRecoverySnapshot) -> EmployeeLifecycleReport:
+        completed: list[str] = []
+        for stage in EMPLOYEE_RECOVERY_ORDER:
+            try:
+                outcome = self._recoverers[stage](snapshot)
+                if outcome is False:
+                    raise RuntimeError("stage rejected recovery")
+            except Exception:
+                self._report = EmployeeLifecycleReport(
+                    False, tuple(completed), blocker=stage
+                )
+                return self._report
+            completed.append(stage)
+        self._report = EmployeeLifecycleReport(True, tuple(completed))
+        return self._report
+
+    def shutdown(self) -> tuple[str, ...]:
+        completed: list[str] = []
+        for stage in reversed(EMPLOYEE_RECOVERY_ORDER):
+            closer = self._closers.get(stage)
+            if closer is not None:
+                closer()
+            completed.append(stage)
+        self._report = EmployeeLifecycleReport(False, ())
+        return tuple(completed)
 
 
 # ---------------------------------------------------------------------------

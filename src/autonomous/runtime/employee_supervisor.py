@@ -41,11 +41,14 @@ class EmployeeRuntimeSupervisor:
         self._conditions: dict[str, threading.Event] = {}
         self._lock = threading.RLock()
         self._closed = False
+        self._retired: set[str] = set()
 
     def ensure_employee(self, agent_id: str) -> EmployeeActor:
         with self._lock:
             if self._closed:
                 raise RuntimeError("employee supervisor is closed")
+            if agent_id in self._retired:
+                raise RuntimeError("employee actor is retired")
             actor = self._actors.get(agent_id)
             if actor is None:
                 kwargs: dict[str, object] = {}
@@ -147,6 +150,15 @@ class EmployeeRuntimeSupervisor:
 
     def recycle(self, agent_id: str, reason: str) -> None:
         self.ensure_employee(agent_id).recycle(reason)
+
+    def retire_employee(self, agent_id: str) -> None:
+        """Close mailbox/session and fence recreation before authority removal."""
+
+        with self._lock:
+            self._retired.add(agent_id)
+            actor = self._actors.pop(agent_id, None)
+        if actor is not None:
+            actor.close()
 
     def sweep_idle(self) -> int:
         with self._lock:

@@ -642,6 +642,8 @@ class EmployeeDepartmentRuntime:
         self._activation_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._notification_async_lock: asyncio.Lock | None = None
         self._automatic_activation = False
+        self._core_recovered = False
+        self._recovery_trace: list[str] = []
 
     @classmethod
     def from_settings(
@@ -854,14 +856,6 @@ class EmployeeDepartmentRuntime:
                     ),
                     coordinator_decision_provider=decision_provider,
                 )
-                recovered_team_runs = runtime._team.recover()
-                if recovered_team_runs:
-                    logger.warning(
-                        "employee team recovery isolated %d interrupted run(s)",
-                        recovered_team_runs,
-                    )
-            # Team recovery must terminalize interrupted effects before runtime
-            # recovery is allowed to start the durable dispatch worker.
             runtime.recover()
             return runtime
         except Exception as exc:
@@ -1131,6 +1125,9 @@ class EmployeeDepartmentRuntime:
         """Replay first, then resume only recoverable durable phases."""
         if self._service is None:
             return
+        self._core_recovered = False
+        self._recovery_trace.clear()
+        self._recovery_trace.append("journal_projection")
         projection = self._service.recover()
         pending_manifest_reauthorizations = (
             self._service.recover_manifest_reauthorizations()
@@ -1148,13 +1145,53 @@ class EmployeeDepartmentRuntime:
                     self._execution_blockers = ("membership_recovery",)
         if self._data is not None:
             try:
+                self._recovery_trace.append("data_projection")
                 self._recover_employee_data(self._service.projection_state)
+                self._recovery_trace.append("workspace_projection")
             except Exception as exc:
                 logger.error(
                     "employee data recovery failed closed: %s",
                     type(exc).__name__,
                 )
                 self._execution_blockers = ("employee_data_recovery",)
+        if not self._execution_blockers and self._group_ledger is not None:
+            try:
+                self._recovery_trace.append("group_ledger")
+                self._group_ledger.rebuild_projection()
+            except Exception as exc:
+                logger.error(
+                    "employee group ledger recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("group_ledger_recovery",)
+        employee_runtime = (
+            self._dispatch.employee_runtime if self._dispatch is not None else None
+        )
+        if not self._execution_blockers and employee_runtime is not None:
+            try:
+                self._recovery_trace.append("actor_mailboxes")
+                employee_runtime.recover()
+            except Exception as exc:
+                logger.error(
+                    "employee actor recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("employee_actor_recovery",)
+        if not self._execution_blockers and self._team is not None:
+            try:
+                self._recovery_trace.append("team_coordinator")
+                recovered_team_runs = self._team.recover()
+                if recovered_team_runs:
+                    logger.warning(
+                        "employee team recovered %d interrupted run(s)",
+                        recovered_team_runs,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "employee team recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("team_recovery",)
         execution_recovered = not self._execution_blockers
         if execution_recovered:
             try:
@@ -1190,6 +1227,7 @@ class EmployeeDepartmentRuntime:
                 execution_recovered = False
         if not self._refresh_context_bindings(self._service.projection_state):
             self._context_blockers = ("context_binding_sync",)
+        self._core_recovered = not self._execution_blockers and not self._context_blockers
         if not self._runtime_enabled:
             self._service.mark_runtime_recovered()
             return
@@ -1258,6 +1296,7 @@ class EmployeeDepartmentRuntime:
         for operation_id in pending_manifest_reauthorizations:
             self._submit_manifest_reauthorization(operation_id)
         if pending_intents or status_reply_intents or recover_notifications:
+            self._recovery_trace.append("employee_channels")
             self._submit_coroutine(
                 self._recover_runtime(
                     list(dict.fromkeys(pending_intents)),
@@ -1266,6 +1305,7 @@ class EmployeeDepartmentRuntime:
                 label="recovery",
             )
         else:
+            self._recovery_trace.extend(("employee_channels", "admission_open"))
             self._service.mark_runtime_recovered()
             if self._loop is not None:
                 self._loop.call_soon_threadsafe(self._start_monitor_in_loop)
@@ -1274,6 +1314,10 @@ class EmployeeDepartmentRuntime:
 
     def journal_frames(self) -> tuple[Any, ...]:
         return tuple(self._writer.replay()) if self._writer is not None else ()
+
+    @property
+    def recovery_trace(self) -> tuple[str, ...]:
+        return tuple(self._recovery_trace)
 
     def record_group_event(
         self,
@@ -1361,7 +1405,22 @@ class EmployeeDepartmentRuntime:
             context_safe = cleanup("context_drain", self._context_service.drain)
         if self._context_source_factory is not None:
             context_safe = cleanup("context_sources", self._context_source_factory.close) and context_safe
-        resources_safe = team_safe and dispatch_safe and activities_safe and context_safe
+        outbox_safe = True
+        if self._outbox is not None and self._outbox_delivery is not None:
+            def drain_outbox() -> None:
+                for _attempt in range(10_000):
+                    if not self._drain_employee_outbox_once():
+                        return
+                raise RuntimeError("employee Outbox did not drain")
+
+            outbox_safe = cleanup("outbox_drain", drain_outbox)
+        resources_safe = (
+            team_safe
+            and dispatch_safe
+            and activities_safe
+            and context_safe
+            and outbox_safe
+        )
         if resources_safe:
             if self._channels is not None:
                 resources_safe = cleanup("channels", self._channels.close)
@@ -3915,6 +3974,7 @@ class EmployeeDepartmentRuntime:
                 )
         await self._retry_terminal_notifications()
         self._resume_recoverable_activation_required_replies()
+        self._recovery_trace.append("admission_open")
         self._require_service().mark_runtime_recovered()
         if not self._execution_blockers:
             self._start_dispatch_worker()

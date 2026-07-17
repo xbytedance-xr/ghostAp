@@ -8,7 +8,11 @@ from .reconciler import (
     ReconciliationReport,
 )
 from .supervisor import (
+    EMPLOYEE_RECOVERY_ORDER,
     ChannelHealth,
+    EmployeeLifecycleReport,
+    EmployeeLifecycleSupervisor,
+    EmployeeRecoverySnapshot,
     RecoveryReport,
     Supervisor,
     SupervisorState,
@@ -23,6 +27,10 @@ __all__ = [
     "CleanupResult",
     "CleanupTarget",
     "CleanupTargetType",
+    "EMPLOYEE_RECOVERY_ORDER",
+    "EmployeeLifecycleReport",
+    "EmployeeLifecycleSupervisor",
+    "EmployeeRecoverySnapshot",
     "Reconciler",
     "ReconciliationAction",
     "ReconciliationActionType",

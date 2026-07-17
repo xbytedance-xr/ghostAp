@@ -24,6 +24,10 @@ class ProjectionQuery(Protocol):
     def list_goals(self, tenant_key: str) -> list[Any]: ...
 
 
+class EmployeeWorkspaceMigrator(Protocol):
+    def migrate(self, employees: tuple[tuple[str, str], ...]) -> Any: ...
+
+
 @dataclass
 class CompatResult:
     handled: bool = False
@@ -46,10 +50,12 @@ class SlockCompatLayer:
         self,
         mode: CompatibilityMode,
         projections: ProjectionQuery | None = None,
+        workspace_migrator: EmployeeWorkspaceMigrator | None = None,
     ) -> None:
         self._mode = mode
         self._projections = projections
         self._write_log: list[dict[str, Any]] = []
+        self._workspace_migrator = workspace_migrator
 
     @property
     def mode(self) -> CompatibilityMode:
@@ -93,6 +99,16 @@ class SlockCompatLayer:
             return True
         self._write_log.append({"operation": operation, "data": data})
         return False
+
+    def migrate_employee_workspaces(
+        self,
+        employees: tuple[tuple[str, str], ...],
+    ) -> Any:
+        """Invoke the canonical projector; no legacy file payload is accepted."""
+
+        if self._workspace_migrator is None:
+            raise RuntimeError("employee workspace migrator is unavailable")
+        return self._workspace_migrator.migrate(employees)
 
     def _forward_to_manager(
         self,
