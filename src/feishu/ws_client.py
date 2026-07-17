@@ -475,6 +475,7 @@ class FeishuWSClient:
                 if self._employee_department_runtime is not None
                 else None
             ),
+            employee_runtime_facade=self._employee_department_runtime,
             main_bot_outbound_audit=main_bot_outbound_audit,
             main_bot_outbound_audit_failure=main_bot_outbound_audit_failure,
             tenant_key_resolver=get_current_tenant_key,

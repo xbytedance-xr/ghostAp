@@ -115,6 +115,11 @@ class EmployeeActor:
     def mailbox_depth(self) -> int:
         return self._queue.qsize()
 
+    @property
+    def active_assignment_id(self) -> str:
+        with self._lock:
+            return self._active_id
+
     def submit(self, assignment: EmployeeAssignment, *, recovered: bool = False) -> str:
         if assignment.bootstrap.session_key.agent_id != self.agent_id:
             raise ValueError("assignment employee mismatch")

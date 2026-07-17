@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..journal.frame import JournalEvent
@@ -16,6 +17,14 @@ from .employee_actor import (
 )
 
 AssignmentLoader = Callable[[str, dict[str, object]], EmployeeAssignment | None]
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeActorSnapshot:
+    agent_id: str
+    status: EmployeeActorStatus
+    mailbox_depth: int
+    active_assignment_id: str = ""
 
 
 class EmployeeRuntimeSupervisor:
@@ -111,6 +120,25 @@ class EmployeeRuntimeSupervisor:
 
     def status(self, agent_id: str) -> EmployeeActorStatus:
         return self.ensure_employee(agent_id).status
+
+    def inspect(self, agent_id: str) -> EmployeeActorSnapshot:
+        """Read status without allocating a cold actor as a side effect."""
+
+        with self._lock:
+            actor = self._actors.get(agent_id)
+            retired = agent_id in self._retired
+        if actor is None:
+            return EmployeeActorSnapshot(
+                agent_id,
+                EmployeeActorStatus.STOPPED if retired else EmployeeActorStatus.READY_COLD,
+                0,
+            )
+        return EmployeeActorSnapshot(
+            agent_id,
+            actor.status,
+            actor.mailbox_depth,
+            actor.active_assignment_id,
+        )
 
     def submit(self, assignment: EmployeeAssignment) -> str:
         assignment_id = assignment.assignment_id
@@ -212,4 +240,4 @@ class EmployeeRuntimeSupervisor:
             raise RuntimeError("employee recovery terminal was not anchored")
 
 
-__all__ = ["EmployeeRuntimeSupervisor"]
+__all__ = ["EmployeeActorSnapshot", "EmployeeRuntimeSupervisor"]

@@ -879,35 +879,35 @@ class EmployeeKnowledgeService:
 - `/status` 显示 active assignment、mailbox depth、session warm/cold、identity version、knowledge generation、last checkpoint 和 context quality。
 - 新增管理员动作：recycle session、rebuild workspace、lint knowledge、retry review item；不得提供直接编辑权限文件的动作。
 
-- [ ] **Step 1: 先完成状态卡 HTML 预览**
+- [x] **Step 1: 先完成状态卡 HTML 预览**
 
   清晰区分“飞书连接正常”“模型会话热驻留”“员工可接任务”“任务部分上下文”四种概念。
 
-- [ ] **Step 2: 写卡片纯渲染测试**
+- [x] **Step 2: 写卡片纯渲染测试**
 
   空 assignment/空 warning 不渲染空块；长 Team run 使用续卡；每名员工任务仍是一张独立卡。
 
-- [ ] **Step 3: 写错误消息测试**
+- [x] **Step 3: 写错误消息测试**
 
   context partial 显示可理解的降级说明；action-required 显示 run/assignment、具体 code、已完成贡献和恢复动作。
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_runtime_cards.py tests/test_slock_status_card.py -q`
 
   Expected: FAIL before UI integration.
 
-- [ ] **Step 5: 实现 handler -> session -> render/delivery 路径**
+- [x] **Step 5: 实现 handler -> session -> render/delivery 路径**
 
   handler 只调用 runtime facade，不读取 projector 或 session 内部结构。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_runtime_cards.py tests/test_slock_status_card.py tests/test_card_session.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
   Commit: `feat(ui): expose employee runtime health`
 

@@ -12,6 +12,7 @@ from src.autonomous.workspace import (
     EmployeeWorkspaceSnapshot,
     EmployeeWorkspaceSource,
     WorkspaceLintError,
+    inspect_employee_workspace,
     lint_employee_workspace,
 )
 
@@ -49,6 +50,7 @@ def test_lint_detects_secret_oversize_and_permission_drift(tmp_path: Path) -> No
 
     codes = {issue.code for issue in raised.value.issues}
     assert {"secret_content", "agents_too_large", "unsafe_mode"} <= codes
+    assert {issue.code for issue in inspect_employee_workspace(snapshot, tmp_path / "agents")} == codes
 
 
 def test_workspace_snapshot_is_frozen(tmp_path: Path) -> None:
@@ -56,4 +58,3 @@ def test_workspace_snapshot_is_frozen(tmp_path: Path) -> None:
     with pytest.raises(FrozenInstanceError):
         snapshot.identity_version = 3  # type: ignore[misc]
     assert isinstance(snapshot, EmployeeWorkspaceSnapshot)
-

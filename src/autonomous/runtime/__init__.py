@@ -11,7 +11,7 @@ from .employee_actor import (
     EmployeeCancellationOutcome,
 )
 from .employee_session import EmployeeSessionBootstrap, EmployeeSessionKey
-from .employee_supervisor import EmployeeRuntimeSupervisor
+from .employee_supervisor import EmployeeActorSnapshot, EmployeeRuntimeSupervisor
 from .runner import RunResult, SandboxRunner
 from .runtime import (
     AgentRuntime,
@@ -30,6 +30,7 @@ __all__ = [
     "EmployeeSessionBootstrap",
     "EmployeeSessionKey",
     "EmployeeActor",
+    "EmployeeActorSnapshot",
     "EmployeeActorStatus",
     "EmployeeAssignment",
     "EmployeeAssignmentTerminal",

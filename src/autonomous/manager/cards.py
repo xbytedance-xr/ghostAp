@@ -7,9 +7,199 @@ from src/workflow_engine/tool_registry (same source as /wf, Deep, Spec).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from ..provisioning.hire_port import EmployeeProfileTemplate
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeRuntimeCardView:
+    """Secret-free facade output consumed by cards and handlers."""
+
+    agent_id: str
+    name: str
+    emoji: str
+    role: str
+    tool: str
+    model: str
+    employee_state: str
+    bot_state: str
+    bot_generation: int
+    actor_state: str
+    mailbox_depth: int
+    can_accept: bool
+    identity_version: int
+    knowledge_generation: int
+    active_assignment_id: str = ""
+    active_run_id: str = ""
+    last_checkpoint: str = ""
+    context_quality: str = "complete"
+    context_warnings: tuple[str, ...] = ()
+    error_code: str = ""
+    completed_contributions: tuple[str, ...] = ()
+    recovery_hint: str = ""
+    review_item_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "context_warnings", tuple(self.context_warnings))
+        object.__setattr__(
+            self,
+            "completed_contributions",
+            tuple(self.completed_contributions),
+        )
+        object.__setattr__(self, "review_item_ids", tuple(self.review_item_ids))
+        if self.mailbox_depth < 0 or self.bot_generation < 0:
+            raise ValueError("runtime counters must be non-negative")
+
+
+def _runtime_markdown(view: EmployeeRuntimeCardView) -> list[dict[str, Any]]:
+    session_temperature = "warm" if view.actor_state == "ready_warm" else "cold"
+    admission = "可接任务" if view.can_accept else "不可接任务"
+    model_label = f"{view.tool} / {view.model or 'default'}"
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"{view.emoji} **{view.name}** · `{view.role or 'custom'}`\n"
+                f"{model_label} · identity v{view.identity_version}"
+            ),
+        },
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "content": (
+                f"**飞书连接**　Bot {view.bot_state.upper()} · generation {view.bot_generation}\n"
+                f"**模型运行时**　Agent {view.actor_state.upper()} · session {session_temperature}\n"
+                f"**接单资格**　{admission} · mailbox {view.mailbox_depth}\n"
+                f"**持久知识**　knowledge generation {view.knowledge_generation}"
+            ),
+        },
+    ]
+    if view.active_assignment_id or view.active_run_id or view.last_checkpoint:
+        parts = ["**当前 Assignment**"]
+        if view.active_run_id:
+            parts.append(f"Run: `{view.active_run_id}`")
+        if view.active_assignment_id:
+            parts.append(f"Assignment: `{view.active_assignment_id}`")
+        if view.last_checkpoint:
+            parts.append(f"Last checkpoint: `{view.last_checkpoint}`")
+        elements.extend(({"tag": "hr"}, {"tag": "markdown", "content": "\n".join(parts)}))
+    if view.context_quality != "complete":
+        warning_text = "、".join(view.context_warnings) or "部分来源暂不可用"
+        elements.extend(
+            (
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": (
+                        "**⚠️ 上下文部分可用（降级说明）**\n"
+                        f"任务可继续，但结果会保留 partial 标记：{warning_text}"
+                    ),
+                },
+            )
+        )
+    if view.error_code:
+        contributions = "\n".join(f"- {item}" for item in view.completed_contributions)
+        detail = (
+            f"**需要人工处理** · `{view.error_code}`\n"
+            f"Run: `{view.active_run_id or 'unknown'}` · "
+            f"Assignment: `{view.active_assignment_id or 'unknown'}`"
+        )
+        if contributions:
+            detail += f"\n**已完成贡献**\n{contributions}"
+        if view.recovery_hint:
+            detail += f"\n**恢复动作**　{view.recovery_hint}"
+        elements.extend(({"tag": "hr"}, {"tag": "markdown", "content": detail}))
+    return elements
+
+
+def build_employee_runtime_status_card(
+    view: EmployeeRuntimeCardView,
+    *,
+    admin: bool = False,
+) -> dict[str, Any]:
+    """Render one employee runtime without conflating transport and model state."""
+
+    elements = _runtime_markdown(view)
+    if admin:
+        actions = [
+            ("回收模型会话", "employee_runtime_recycle_session", ""),
+            ("重建 Workspace", "employee_runtime_rebuild_workspace", ""),
+            ("检查 Knowledge", "employee_runtime_lint_knowledge", ""),
+        ]
+        if view.review_item_ids:
+            actions.append(
+                (
+                    f"重试 Review Item ({len(view.review_item_ids)})",
+                    "employee_runtime_retry_review",
+                    view.review_item_ids[0],
+                )
+            )
+        elements.extend(
+            (
+                {"tag": "hr"},
+                {"tag": "markdown", "content": "**管理员恢复动作**"},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": label},
+                            "type": "primary" if index == 0 else "default",
+                            "value": {
+                                "action": action,
+                                "agent_id": view.agent_id,
+                                **({"review_id": review_id} if review_id else {}),
+                            },
+                        }
+                        for index, (label, action, review_id) in enumerate(actions)
+                    ],
+                },
+            )
+        )
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"员工运行时 · {view.name}"},
+            "template": "orange" if view.error_code else "blue",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_employee_roster_card(
+    employees: tuple[EmployeeRuntimeCardView, ...],
+    *,
+    archived_count: int = 0,
+) -> dict[str, Any]:
+    elements: list[dict[str, Any]] = []
+    for view in employees:
+        admission = "可接任务" if view.can_accept else "不可接任务"
+        content = (
+            f"{view.emoji} **{view.name}** · `{view.tool}/{view.model or 'default'}`\n"
+            f"Bot {view.bot_state.upper()} / Agent {view.actor_state.upper()} · {admission}"
+        )
+        if view.active_assignment_id:
+            content += f"\n当前 Assignment: `{view.active_assignment_id}`"
+        elements.append({"tag": "markdown", "content": content})
+        elements.append({"tag": "hr"})
+    if elements:
+        elements.pop()
+    if archived_count:
+        elements.append(
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": f"历史归档 {archived_count} 人"}]}
+        )
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"员工花名册（{len(employees)}人）"},
+            "template": "blue",
+        },
+        "body": {"elements": elements},
+    }
 
 
 def build_employee_profile_markdown(

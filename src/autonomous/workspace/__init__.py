@@ -1,6 +1,11 @@
 """Generated knowledge workspace for persistent logical employees."""
 
-from .lint import WorkspaceLintError, WorkspaceLintIssue, lint_employee_workspace
+from .lint import (
+    WorkspaceLintError,
+    WorkspaceLintIssue,
+    inspect_employee_workspace,
+    lint_employee_workspace,
+)
 from .models import (
     EmployeeWorkspaceSnapshot,
     EmployeeWorkspaceSource,
@@ -15,5 +20,6 @@ __all__ = [
     "WorkspaceLintError",
     "WorkspaceLintIssue",
     "WorkspaceProjectionError",
+    "inspect_employee_workspace",
     "lint_employee_workspace",
 ]

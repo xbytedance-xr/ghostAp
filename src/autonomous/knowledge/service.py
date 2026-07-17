@@ -60,6 +60,7 @@ class EmployeeKnowledgeService:
         self._known: set[str] = set()
         self._sources: dict[str, dict[str, str]] = {}
         self._terminal: set[str] = set()
+        self._review_required: set[str] = set()
         self._closed = False
         self._thread: threading.Thread | None = None
 
@@ -122,6 +123,46 @@ class EmployeeKnowledgeService:
             agent_id=agent_id,
             agents_root=self._agents_root,
         )
+
+    def retry_review_item(
+        self,
+        ingest_id: str,
+        *,
+        tenant_key: str,
+        agent_id: str,
+    ) -> str:
+        """Durably reopen one review-required ingest without accepting content."""
+
+        with self._lock:
+            self._refresh_projection()
+            source = self._sources.get(ingest_id)
+            if source is None or ingest_id not in self._review_required:
+                raise KeyError(ingest_id)
+            if (
+                source.get("tenant_key") != tenant_key
+                or source.get("agent_id") != agent_id
+            ):
+                raise PermissionError("knowledge review scope mismatch")
+            self._commit(
+                ingest_id,
+                "knowledge.ingest.retry_requested",
+                {"source_id": source["source_id"]},
+            )
+            self._terminal.discard(ingest_id)
+            self._review_required.discard(ingest_id)
+            self._ensure_thread()
+            self._queue.put(ingest_id)
+        return ingest_id
+
+    def list_review_items(self, tenant_key: str, agent_id: str) -> tuple[str, ...]:
+        with self._lock:
+            self._refresh_projection()
+            return tuple(
+                ingest_id
+                for ingest_id in sorted(self._review_required)
+                if self._sources.get(ingest_id, {}).get("tenant_key") == tenant_key
+                and self._sources.get(ingest_id, {}).get("agent_id") == agent_id
+            )
 
     def project_all(self) -> int:
         """Rebuild source manifests/logs only from committed knowledge docs."""
@@ -425,6 +466,7 @@ class EmployeeKnowledgeService:
     def _refresh_projection(self) -> None:
         known: set[str] = set()
         terminal: set[str] = set()
+        review_required: set[str] = set()
         sources: dict[str, dict[str, str]] = {}
         for frame in self._writer.replay():
             for event in frame.events:
@@ -434,13 +476,18 @@ class EmployeeKnowledgeService:
                 if event.event_type == "knowledge.ingest.queued":
                     known.add(ingest_id)
                     sources[ingest_id] = {key: str(value) for key, value in event.payload.items()}
-                elif event.event_type in {
-                    "knowledge.ingest.published",
-                    "knowledge.ingest.review_required",
-                }:
+                elif event.event_type == "knowledge.ingest.published":
                     terminal.add(ingest_id)
+                    review_required.discard(ingest_id)
+                elif event.event_type == "knowledge.ingest.review_required":
+                    terminal.add(ingest_id)
+                    review_required.add(ingest_id)
+                elif event.event_type == "knowledge.ingest.retry_requested":
+                    terminal.discard(ingest_id)
+                    review_required.discard(ingest_id)
         self._known = known
         self._terminal = terminal
+        self._review_required = review_required
         self._sources = sources
 
     def _commit_effect(self, ingest_id: str, state: str) -> None:

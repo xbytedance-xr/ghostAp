@@ -40,9 +40,10 @@ from ..data.composition import (
     build_employee_data_composition,
 )
 from ..data.keyring import EmployeeDataKeyring
+from ..data.models import DataKind
 from ..data.ports import HistoryQuerySpec, MemoryQuerySpec
 from ..data.query import AuthenticatedDataRequest, EmployeeDataSubject, QueryDeniedError
-from ..domain import EmployeeState
+from ..domain import EmployeeState, WorkerType
 from ..gateway.coordinator import EmployeeDispatchCoordinator
 from ..gateway.env_scope import (
     EmployeeEnvironmentAuthority,
@@ -57,6 +58,7 @@ from ..journal.anchor import FileAnchor
 from ..journal.frame import JournalEvent
 from ..journal.projections import ProjectionState
 from ..journal.writer import JournalWriter
+from ..manager.cards import EmployeeRuntimeCardView
 from ..membership import (
     EmployeeMembershipService,
     LarkMembershipAPI,
@@ -916,6 +918,187 @@ class EmployeeDepartmentRuntime:
 
     def readiness(self) -> RuntimeReadiness:
         return self.hire_readiness()
+
+    def list_employee_runtime_statuses(
+        self,
+        tenant_key: str,
+    ) -> tuple[EmployeeRuntimeCardView, ...]:
+        """Return secret-free runtime views without exposing projections to handlers."""
+
+        service = self._require_service()
+        projection = service.synchronize_projection()
+        employees = sorted(
+            (
+                employee
+                for employee in projection.employees.values()
+                if employee.tenant_key == tenant_key
+                and employee.worker_type is WorkerType.VISIBLE
+                and employee.state is not EmployeeState.ARCHIVED
+            ),
+            key=lambda employee: (employee.name.casefold(), employee.agent_id),
+        )
+        return tuple(self._employee_runtime_view(employee) for employee in employees)
+
+    def get_employee_runtime_status(
+        self,
+        tenant_key: str,
+        agent_id: str,
+    ) -> EmployeeRuntimeCardView:
+        for view in self.list_employee_runtime_statuses(tenant_key):
+            if view.agent_id == agent_id:
+                return view
+        raise KeyError(agent_id)
+
+    def recycle_employee_session(
+        self,
+        tenant_key: str,
+        agent_id: str,
+        *,
+        reason: str = "admin_requested",
+    ) -> EmployeeRuntimeCardView:
+        self._assert_employee_tenant(tenant_key, agent_id)
+        runtime = self._dispatch.employee_runtime if self._dispatch is not None else None
+        if runtime is None:
+            raise RuntimeError("employee actor runtime is unavailable")
+        runtime.recycle(agent_id, reason)
+        return self.get_employee_runtime_status(tenant_key, agent_id)
+
+    def rebuild_employee_workspace(
+        self,
+        tenant_key: str,
+        agent_id: str,
+    ) -> EmployeeRuntimeCardView:
+        self._assert_employee_tenant(tenant_key, agent_id)
+        projector = self._data.workspace_projector if self._data is not None else None
+        if projector is None:
+            raise RuntimeError("employee workspace projector is unavailable")
+        projector.rebuild(tenant_key, agent_id)
+        return self.get_employee_runtime_status(tenant_key, agent_id)
+
+    def lint_employee_knowledge(self, tenant_key: str, agent_id: str) -> object:
+        self._assert_employee_tenant(tenant_key, agent_id)
+        knowledge = self._data.knowledge_service if self._data is not None else None
+        if knowledge is None:
+            raise RuntimeError("employee knowledge service is unavailable")
+        return knowledge.lint(tenant_key, agent_id)
+
+    def retry_employee_knowledge_review(
+        self,
+        tenant_key: str,
+        agent_id: str,
+        review_id: str,
+    ) -> str:
+        self._assert_employee_tenant(tenant_key, agent_id)
+        knowledge = self._data.knowledge_service if self._data is not None else None
+        if knowledge is None:
+            raise RuntimeError("employee knowledge service is unavailable")
+        return knowledge.retry_review_item(
+            review_id,
+            tenant_key=tenant_key,
+            agent_id=agent_id,
+        )
+
+    def _assert_employee_tenant(self, tenant_key: str, agent_id: str) -> object:
+        projection = self._require_service().synchronize_projection()
+        employee = projection.employees.get(agent_id)
+        if employee is None or employee.tenant_key != tenant_key:
+            raise KeyError(agent_id)
+        return employee
+
+    def _employee_runtime_view(self, employee: object) -> EmployeeRuntimeCardView:
+        agent_id = str(getattr(employee, "agent_id"))
+        channel = self._channels.status(agent_id) if self._channels is not None else None
+        bot_state = (
+            str(getattr(getattr(channel, "state", None), "value", "stopped"))
+            if channel is not None
+            else "stopped"
+        )
+        bot_generation = int(getattr(channel, "generation", 0) or 0)
+        runtime = self._dispatch.employee_runtime if self._dispatch is not None else None
+        actor = runtime.inspect(agent_id) if runtime is not None else None
+        actor_state = (
+            str(getattr(getattr(actor, "status", None), "value", "ready_cold"))
+            if actor is not None
+            else "legacy_one_shot"
+        )
+        mailbox_depth = int(getattr(actor, "mailbox_depth", 0) or 0)
+        active_assignment_id = str(
+            getattr(actor, "active_assignment_id", "") or ""
+        )
+        active_run_id = ""
+        checkpoint = ""
+        context_quality = "complete"
+        warnings: list[str] = []
+        if self._dispatch is not None:
+            attempts = [
+                attempt
+                for attempt in self._dispatch.state.attempts.values()
+                if attempt.binding.agent_id == agent_id and not attempt.terminal_status
+            ]
+            if attempts:
+                attempt = max(attempts, key=lambda item: item.dispatch_sequence)
+                active_assignment_id = active_assignment_id or attempt.binding.task_id
+                active_run_id = attempt.binding.run_id
+                checkpoint = f"journal:{attempt.dispatch_sequence}"
+                for frame in self.journal_frames():
+                    for event in frame.events:
+                        if (
+                            event.event_type == "context.warning.recorded"
+                            and event.payload.get("attempt_id")
+                            == attempt.binding.attempt_id
+                        ):
+                            context_quality = str(
+                                event.payload.get("quality") or "canonical_partial"
+                            )
+                            warnings.append(str(event.payload.get("code") or "source_unavailable"))
+        knowledge_generation = 0
+        review_item_ids: tuple[str, ...] = ()
+        if self._data is not None:
+            data_state = self._data.service.rebuild_projection()
+            knowledge_generation = max(
+                (
+                    document.version
+                    for document in data_state.employee_documents.values()
+                    if document.agent_id == agent_id
+                    and document.kind is DataKind.KNOWLEDGE_PAGE
+                    and not document.tombstoned
+                ),
+                default=0,
+            )
+            if self._data.knowledge_service is not None:
+                review_item_ids = self._data.knowledge_service.list_review_items(
+                    str(getattr(employee, "tenant_key", "")),
+                    agent_id,
+                )
+        employee_state = str(getattr(getattr(employee, "state", None), "value", ""))
+        can_accept = (
+            employee_state == EmployeeState.ACTIVE.value
+            and bot_state == ChannelProcessState.READY.value
+            and actor_state not in {"degraded", "stopping", "stopped"}
+            and not self._execution_blockers
+        )
+        return EmployeeRuntimeCardView(
+            agent_id=agent_id,
+            name=str(getattr(employee, "name", agent_id)),
+            emoji=str(getattr(employee, "emoji", "🤖")),
+            role=str(getattr(employee, "role", "")),
+            tool=str(getattr(employee, "tool", "")),
+            model=str(getattr(employee, "model", "")),
+            employee_state=employee_state,
+            bot_state=bot_state,
+            bot_generation=bot_generation,
+            actor_state=actor_state,
+            mailbox_depth=mailbox_depth,
+            can_accept=can_accept,
+            identity_version=int(getattr(employee, "aggregate_version", 0)),
+            knowledge_generation=knowledge_generation,
+            active_assignment_id=active_assignment_id,
+            active_run_id=active_run_id,
+            last_checkpoint=checkpoint,
+            context_quality=context_quality,
+            context_warnings=tuple(dict.fromkeys(warnings)),
+            review_item_ids=review_item_ids,
+        )
 
     def hire_readiness(self) -> RuntimeReadiness:
         if self._service is None:

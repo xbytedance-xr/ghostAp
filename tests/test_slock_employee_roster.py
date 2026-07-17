@@ -74,12 +74,18 @@ def _projected_employee(
     )
 
 
-def _handler_for_roster(*, hire_service=None, fire_service=None) -> SlockHandler:
+def _handler_for_roster(
+    *,
+    hire_service=None,
+    fire_service=None,
+    runtime_facade=None,
+) -> SlockHandler:
     handler = object.__new__(SlockHandler)
     handler.ctx = SimpleNamespace(
         employee_hire_service=hire_service,
         employee_fire_service=fire_service,
         employee_membership_service=None,
+        employee_runtime_facade=runtime_facade,
         project_manager=MagicMock(),
         settings=SimpleNamespace(admin_user_ids=frozenset({"ou_admin"})),
     )
@@ -90,6 +96,38 @@ def _handler_for_roster(*, hire_service=None, fire_service=None) -> SlockHandler
 
 
 class TestListEmployeesRoster:
+    def test_runtime_facade_adds_independent_bot_actor_and_admission_state(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
+        employee = _projected_employee(agent_id="agt_atlas", name="Atlas")
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = SimpleNamespace(
+            employees={employee.agent_id: employee}
+        )
+        runtime_facade = MagicMock()
+        runtime_facade.list_employee_runtime_statuses.return_value = (
+            SimpleNamespace(
+                agent_id="agt_atlas",
+                bot_state="ready",
+                actor_state="ready_cold",
+                can_accept=True,
+            ),
+        )
+        handler = _handler_for_roster(
+            hire_service=hire_service,
+            runtime_facade=runtime_facade,
+        )
+
+        handler.list_employees_roster("om_1", "oc_chat")
+
+        card = handler.reply_card.call_args.args[1]
+        payload = json.dumps(card, ensure_ascii=False)
+        assert "Bot READY / Agent READY_COLD" in payload
+        assert "可接任务" in payload
+        assert "employee_runtime_show_status" in payload
+
     def test_shows_all_visible_employees_with_state(self, monkeypatch):
         monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
 

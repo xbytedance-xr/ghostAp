@@ -37,6 +37,17 @@ def lint_employee_workspace(
     snapshot: EmployeeWorkspaceSnapshot,
     agents_root: str | Path,
 ) -> None:
+    issues = inspect_employee_workspace(snapshot, agents_root)
+    if issues:
+        raise WorkspaceLintError(issues)
+
+
+def inspect_employee_workspace(
+    snapshot: EmployeeWorkspaceSnapshot,
+    agents_root: str | Path,
+) -> tuple[WorkspaceLintIssue, ...]:
+    """Return secret-free lint codes for operational status surfaces."""
+
     root = Path(agents_root).expanduser().absolute() / snapshot.agent_id
     issues: list[WorkspaceLintIssue] = []
     contents: dict[str, bytes] = {}
@@ -73,12 +84,12 @@ def lint_employee_workspace(
                 issues.append(WorkspaceLintIssue("unsafe_type", str(candidate.relative_to(root))))
             elif candidate.stat().st_mode & 0o777 != 0o700:
                 issues.append(WorkspaceLintIssue("unsafe_mode", str(candidate.relative_to(root))))
-    if issues:
-        raise WorkspaceLintError(tuple(issues))
+    return tuple(issues)
 
 
 __all__ = [
     "WorkspaceLintError",
     "WorkspaceLintIssue",
+    "inspect_employee_workspace",
     "lint_employee_workspace",
 ]

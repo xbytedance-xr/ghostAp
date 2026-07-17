@@ -13,6 +13,84 @@ from src.slock_engine.card_templates.status import build_status_panel_card
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
 
 
+def test_employee_runtime_status_action_uses_facade_and_pure_card(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.autonomous.manager.cards import EmployeeRuntimeCardView
+    from src.feishu.handlers.slock import SlockHandler
+
+    monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
+    monkeypatch.setattr("src.thread.manager.get_current_sender_id", lambda: "ou_admin")
+    monkeypatch.setattr("src.thread.manager.get_current_is_p2p", lambda: True)
+    facade = MagicMock()
+    facade.get_employee_runtime_status.return_value = EmployeeRuntimeCardView(
+        agent_id="agt_atlas",
+        name="Atlas",
+        emoji="🧭",
+        role="reviewer",
+        tool="codex",
+        model="gpt-test",
+        employee_state="active",
+        bot_state="ready",
+        bot_generation=2,
+        actor_state="ready_cold",
+        mailbox_depth=0,
+        can_accept=True,
+        identity_version=4,
+        knowledge_generation=3,
+    )
+    handler = object.__new__(SlockHandler)
+    handler.ctx = SimpleNamespace(
+        employee_runtime_facade=facade,
+        settings=SimpleNamespace(admin_user_ids=frozenset({"ou_admin"})),
+    )
+    handler.update_card = MagicMock()
+    handler.send_text_to_chat = MagicMock()
+
+    handler.handle_card_action(
+        "om_status",
+        "oc_dm",
+        "employee_runtime_show_status",
+        {"agent_id": "agt_atlas"},
+    )
+
+    facade.get_employee_runtime_status.assert_called_once_with("tenant_a", "agt_atlas")
+    payload = handler.update_card.call_args.args[1]
+    assert "Bot READY" in payload
+    assert "管理员恢复动作" in payload
+
+
+def test_employee_runtime_mutation_requires_admin_dm(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.feishu.handlers.slock import SlockHandler
+
+    monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
+    monkeypatch.setattr("src.thread.manager.get_current_sender_id", lambda: "ou_other")
+    monkeypatch.setattr("src.thread.manager.get_current_is_p2p", lambda: True)
+    facade = MagicMock()
+    handler = object.__new__(SlockHandler)
+    handler.ctx = SimpleNamespace(
+        employee_runtime_facade=facade,
+        settings=SimpleNamespace(admin_user_ids=frozenset({"ou_admin"})),
+    )
+    handler.send_text_to_chat = MagicMock()
+
+    handler.handle_card_action(
+        "om_status",
+        "oc_dm",
+        "employee_runtime_recycle_session",
+        {"agent_id": "agt_atlas"},
+    )
+
+    facade.recycle_employee_session.assert_not_called()
+    assert "仅允许配置管理员" in handler.send_text_to_chat.call_args.args[1]
+
+
 def _make_agent(
     agent_id: str = "agent-1",
     name: str = "TestBot",

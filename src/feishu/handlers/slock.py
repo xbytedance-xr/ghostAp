@@ -2643,6 +2643,16 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             and requester_id
             in getattr(self.ctx.settings, "admin_user_ids", frozenset())
         )
+        runtime_facade = getattr(self.ctx, "employee_runtime_facade", None)
+        runtime_views: dict[str, object] = {}
+        list_runtime = getattr(runtime_facade, "list_employee_runtime_statuses", None)
+        if callable(list_runtime):
+            try:
+                runtime_views = {
+                    view.agent_id: view for view in list_runtime(tenant_key)
+                }
+            except Exception:
+                logger.exception("employee runtime status facade failed")
 
         hire_service = getattr(self.ctx, "employee_hire_service", None)
         if hire_service is None:
@@ -2743,6 +2753,36 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 f"{emp.emoji} **{emp.name}**　{tool_model}　"
                 f"{state_label}　群×{group_count}"
             )
+            runtime_view = runtime_views.get(emp.agent_id)
+            if runtime_view is not None:
+                bot_state = str(getattr(runtime_view, "bot_state", "unknown")).upper()
+                actor_state = str(
+                    getattr(runtime_view, "actor_state", "unknown")
+                ).upper()
+                admission = (
+                    "可接任务"
+                    if getattr(runtime_view, "can_accept", False) is True
+                    else "不可接任务"
+                )
+                line += f"\n  Bot {bot_state} / Agent {actor_state}　{admission}"
+                manifest_actions.extend(
+                    build_responsive_layout(
+                        [
+                            {
+                                "tag": "button",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": f"查看 {emp.name} 运行时",
+                                },
+                                "type": "default",
+                                "value": {
+                                    "action": "employee_runtime_show_status",
+                                    "agent_id": emp.agent_id,
+                                },
+                            }
+                        ]
+                    )
+                )
             if show_admin_details:
                 details = [f"Employee ID: `{emp.agent_id}`"]
                 principal = getattr(projection, "bot_principals", {}).get(
@@ -5349,6 +5389,92 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
     def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
         """Handle slock_* card actions."""
+        employee_runtime_actions = {
+            "employee_runtime_show_status",
+            "employee_runtime_recycle_session",
+            "employee_runtime_rebuild_workspace",
+            "employee_runtime_lint_knowledge",
+            "employee_runtime_retry_review",
+        }
+        if action_type in employee_runtime_actions:
+            from ...autonomous.manager.cards import build_employee_runtime_status_card
+            from ...thread.manager import (
+                get_current_is_p2p,
+                get_current_sender_id,
+                get_current_tenant_key,
+            )
+
+            facade = getattr(self.ctx, "employee_runtime_facade", None)
+            tenant_key = get_current_tenant_key() or ""
+            agent_id = str(value.get("agent_id") or "")
+            sender_id = get_current_sender_id() or ""
+            is_admin = (
+                get_current_is_p2p()
+                and sender_id
+                in frozenset(getattr(self.ctx.settings, "admin_user_ids", ()) or ())
+            )
+            if facade is None or not tenant_key or not agent_id:
+                self.send_text_to_chat(open_chat_id, "⚠️ 员工运行时状态当前不可用。")
+                return
+            if action_type != "employee_runtime_show_status" and not is_admin:
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "⛔ 员工恢复动作仅允许配置管理员在主 Bot 私聊中执行。",
+                )
+                return
+            try:
+                if action_type == "employee_runtime_recycle_session":
+                    facade.recycle_employee_session(tenant_key, agent_id)
+                    self.send_text_to_chat(open_chat_id, "✅ 模型会话已回收；下次任务将冷启动。")
+                elif action_type == "employee_runtime_rebuild_workspace":
+                    facade.rebuild_employee_workspace(tenant_key, agent_id)
+                    self.send_text_to_chat(open_chat_id, "✅ Workspace 已从 canonical projection 重建。")
+                elif action_type == "employee_runtime_lint_knowledge":
+                    report = facade.lint_employee_knowledge(tenant_key, agent_id)
+                    issues = tuple(getattr(report, "issues", ()) or ())
+                    if issues:
+                        codes = "、".join(
+                            str(getattr(issue, "code", "unknown")) for issue in issues
+                        )
+                        self.send_text_to_chat(
+                            open_chat_id,
+                            f"⚠️ Knowledge 检查发现 {len(issues)} 项：{codes}",
+                        )
+                    else:
+                        self.send_text_to_chat(open_chat_id, "✅ Knowledge 检查通过。")
+                elif action_type == "employee_runtime_retry_review":
+                    review_id = str(value.get("review_id") or "")
+                    if not review_id:
+                        raise ValueError("review item is missing")
+                    facade.retry_employee_knowledge_review(
+                        tenant_key,
+                        agent_id,
+                        review_id,
+                    )
+                    self.send_text_to_chat(
+                        open_chat_id,
+                        "✅ Review Item 已重新入队；原始来源与权限边界保持不变。",
+                    )
+                view = facade.get_employee_runtime_status(tenant_key, agent_id)
+            except KeyError:
+                self.send_text_to_chat(open_chat_id, "⚠️ 员工或 Review Item 已失效，请刷新 `/roster`。")
+                return
+            except Exception:
+                logger.exception("employee runtime administration failed")
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "⚠️ 恢复动作未能安全完成；状态未被伪造为 READY。",
+                )
+                return
+            self.update_card(
+                open_message_id,
+                json.dumps(
+                    build_employee_runtime_status_card(view, admin=is_admin),
+                    ensure_ascii=False,
+                ),
+            )
+            return
+
         if action_type == "slock_reauthorize_employee_app":
             from ...autonomous.provisioning.hire_service import HireAdmissionError
             from ...thread.manager import (

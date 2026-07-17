@@ -104,6 +104,7 @@ class HandlerContext:
     employee_membership_service: Optional["EmployeeMembershipService"] = None
     employee_data_composition: Optional["EmployeeDataComposition"] = None
     employee_team_service: Optional["EmployeeTeamService"] = None
+    employee_runtime_facade: Any = None
     main_bot_outbound_audit: Optional[Callable[[str, str, str], None]] = None
     main_bot_outbound_audit_failure: Optional[Callable[[Exception], None]] = None
     tenant_key_resolver: Optional[Callable[[], str]] = None
