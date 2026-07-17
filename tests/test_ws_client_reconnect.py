@@ -90,6 +90,13 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
     monkeypatch.setattr(ws.MessageCache, "stop_cleanup_thread", lambda self: None)
 
     client = ws.FeishuWSClient(message_callback=lambda *a, **k: None)
+    membership_audits = []
+    client._employee_department_runtime = SimpleNamespace(
+        membership_service=SimpleNamespace(
+            reconcile_projected_memberships=lambda: membership_audits.append(True)
+        ),
+        close=lambda: None,
+    )
 
     t = threading.Thread(target=client.start, daemon=True)
     t.start()
@@ -102,6 +109,7 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
     client.close()
     t.join(timeout=1.0)
     assert len(created) >= 2
+    assert membership_audits == [True]
     assert all(item["log_level"] == ws.lark.LogLevel.WARNING for item in created)
     assert not t.is_alive()
 

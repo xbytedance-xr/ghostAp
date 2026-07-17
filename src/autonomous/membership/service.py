@@ -81,6 +81,14 @@ class MembershipMutationOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class MembershipAuditSummary:
+    checked: int = 0
+    confirmed: int = 0
+    removed: int = 0
+    degraded: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class _Authority:
     app_id: str
     credential_ref: str
@@ -481,6 +489,107 @@ class EmployeeMembershipService:
                 recovered += 1
         return recovered
 
+    def reconcile_projected_memberships(self) -> MembershipAuditSummary:
+        """Observe every projected ACTIVE membership without mutating Feishu."""
+
+        projection = self._hire.synchronize_projection()
+        coordinates = tuple(
+            sorted(
+                (
+                    employee.tenant_key,
+                    chat_id,
+                    employee.agent_id,
+                )
+                for employee in projection.employees.values()
+                if employee.state is EmployeeState.ACTIVE
+                and employee.worker_type is WorkerType.VISIBLE
+                for chat_id in employee.member_groups
+            )
+        )
+        confirmed = 0
+        removed = 0
+        degraded = 0
+        for tenant_key, chat_id, agent_id in coordinates:
+            with self._chat_lock(chat_id):
+                projection = self._hire.synchronize_projection()
+                employee = projection.employees.get(agent_id)
+                if (
+                    employee is None
+                    or employee.tenant_key != tenant_key
+                    or employee.state is not EmployeeState.ACTIVE
+                    or employee.worker_type is not WorkerType.VISIBLE
+                    or chat_id not in employee.member_groups
+                    or not employee.bot_principal_id
+                ):
+                    continue
+                principal = projection.bot_principals.get(
+                    employee.bot_principal_id
+                )
+                if (
+                    principal is None
+                    or principal.tenant_key != tenant_key
+                    or principal.agent_id != agent_id
+                    or not principal.app_id
+                    or not principal.credential_ref
+                ):
+                    degraded += 1
+                    continue
+                authority = _Authority(
+                    app_id=principal.app_id,
+                    credential_ref=principal.credential_ref,
+                    member_groups=employee.member_groups,
+                )
+                request = MembershipMutationRequest(
+                    tenant_key=tenant_key,
+                    chat_id=chat_id,
+                    agent_id=agent_id,
+                    requester_principal_id="system_membership_recovery",
+                    operation=MembershipOperation.ADD,
+                )
+                try:
+                    observed = self._observe(request, authority)
+                except MembershipRemoteUnknown:
+                    record = self.get(tenant_key, chat_id, agent_id)
+                    if not (
+                        record is not None
+                        and record.state is MembershipState.DEGRADED
+                        and record.error_code == "recovery_observation_unknown"
+                    ):
+                        effect = self._prepare(request, authority)
+                        self._mark_executing(effect.effect_id)
+                        self._mark_action_required(
+                            effect.effect_id,
+                            "recovery_observation_unknown",
+                        )
+                    degraded += 1
+                    continue
+                if observed:
+                    record = self.get(tenant_key, chat_id, agent_id)
+                    if not (
+                        record is not None
+                        and record.state is MembershipState.ACTIVE
+                        and record.confirmed_state is MembershipState.ACTIVE
+                    ):
+                        effect = self._prepare(request, authority)
+                        self._mark_executing(effect.effect_id)
+                        self._commit_confirmed(effect.effect_id, True)
+                    confirmed += 1
+                    continue
+                removal = replace(
+                    request,
+                    operation=MembershipOperation.REMOVE,
+                )
+                effect = self._prepare(removal, authority)
+                self._mark_executing(effect.effect_id)
+                self._commit_confirmed(effect.effect_id, False)
+                removed += 1
+        return MembershipAuditSummary(
+            checked=len(coordinates),
+            confirmed=confirmed,
+            removed=removed,
+            degraded=degraded,
+        )
+
     def _authority_for_effect(self, effect: MembershipEffect) -> _Authority:
         projection = self._hire.synchronize_projection()
         employee = projection.employees.get(effect.agent_id)
@@ -726,6 +835,7 @@ class EmployeeMembershipService:
 __all__ = [
     "EmployeeMembershipService",
     "MembershipAuthorizationError",
+    "MembershipAuditSummary",
     "MembershipBindingError",
     "MembershipMutationOutcome",
     "MembershipMutationRequest",

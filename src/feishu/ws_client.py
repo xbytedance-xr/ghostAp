@@ -2617,6 +2617,29 @@ class FeishuWSClient:
         except (OSError, ValueError, KeyError):
             logger.warning("Failed to restore slock engines from disk", exc_info=True)
 
+        runtime = self._employee_department_runtime
+        membership = (
+            getattr(runtime, "membership_service", None)
+            if runtime is not None
+            else None
+        )
+        reconcile_memberships = getattr(
+            membership,
+            "reconcile_projected_memberships",
+            None,
+        )
+        if callable(reconcile_memberships):
+            summary = reconcile_memberships()
+            removed = int(getattr(summary, "removed", 0) or 0)
+            degraded = int(getattr(summary, "degraded", 0) or 0)
+            if removed or degraded:
+                logger.warning(
+                    "Employee membership startup audit reconciled "
+                    "removed=%d degraded=%d",
+                    removed,
+                    degraded,
+                )
+
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")
 

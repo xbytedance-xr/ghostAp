@@ -385,6 +385,60 @@ def test_restart_rebuilds_membership_projection(tmp_path) -> None:
     assert restarted.get("tenant_1", "oc_team", "agt_1").state is outcome.state
 
 
+def test_startup_audit_removes_stale_projected_membership_without_remote_mutation(
+    tmp_path,
+) -> None:
+    fx = _fixture(tmp_path, member_groups=("oc_team", "oc_other"))
+    fx.remote.observed = False
+
+    summary = fx.service.reconcile_projected_memberships()
+
+    assert summary.checked == 2
+    assert summary.removed == 2
+    assert summary.degraded == 0
+    assert fx.remote.mutations == []
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == ()
+
+
+def test_startup_audit_keeps_confirmed_remote_membership_without_writes(
+    tmp_path,
+) -> None:
+    fx = _fixture(tmp_path, member_groups=("oc_team",))
+    fx.remote.observed = True
+    assert fx.service.mutate(_request()).confirmed is True
+    before = fx.writer.get_last_frame().sequence
+
+    summary = fx.service.reconcile_projected_memberships()
+
+    assert summary.checked == 1
+    assert summary.confirmed == 1
+    assert summary.removed == 0
+    assert summary.degraded == 0
+    assert fx.remote.mutations == []
+    assert fx.writer.get_last_frame().sequence == before
+
+
+def test_startup_audit_degrades_unknown_membership_and_blocks_dispatch(
+    tmp_path,
+) -> None:
+    fx = _fixture(tmp_path, member_groups=("oc_team",))
+    fx.remote.observation_error = MembershipRemoteUnknown(
+        "membership_observation_unknown"
+    )
+
+    summary = fx.service.reconcile_projected_memberships()
+
+    assert summary.checked == 1
+    assert summary.confirmed == 0
+    assert summary.removed == 0
+    assert summary.degraded == 1
+    assert fx.remote.mutations == []
+    assert fx.service.is_degraded("agt_1", "oc_team") is True
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == (
+        "oc_team",
+    )
+
+
 def test_recovery_observes_executing_effect_without_replaying_mutation(tmp_path) -> None:
     fx = _fixture(tmp_path)
     request = _request()
