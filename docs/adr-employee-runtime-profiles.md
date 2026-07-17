@@ -99,3 +99,26 @@ already committed result.
   be stopped (or a single-writer cutover). Older binaries do not understand the
   index authority and therefore cannot safely write concurrently during a
   mixed-version deployment.
+
+## Persistent employee cutover status (2026-07-17)
+
+The persistent Actor and model-led Team Coordinator are implemented as explicit
+runtime modes, but they are not the release defaults yet:
+
+- `AUTONOMOUS_EMPLOYEE_RUNTIME_MODE=shadow` keeps the single legacy model call,
+  derives the Actor bootstrap input without a second model call, and records
+  digest-only comparison events. A mismatch is diagnostic and cannot alter the
+  legacy result.
+- `AUTONOMOUS_EMPLOYEE_RUNTIME_MODE=actor` and
+  `AUTONOMOUS_TEAM_RUNTIME_MODE=coordinator` are explicit, non-fallback modes.
+  Their automated contracts cover session reuse, restart, routing, knowledge,
+  context partiality, Team recovery, selective wake, Outbox, and Fire.
+- Defaults remain `legacy_one_shot` and `legacy_pipeline`. They may change only
+  after the signed real-tenant employee release bundle passes the new
+  persistent-actor, direct-mention, Team Coordinator, partial-context,
+  selective-wake, Fire, and 1/10/50 soak gates.
+
+Rollback before final cutover is configuration-only: restore the two legacy
+modes and restart. The fixed Team pipeline and canonical employee one-shot path
+must remain present until that external acceptance is recorded; local mocks or
+green CI are not authority to delete them.

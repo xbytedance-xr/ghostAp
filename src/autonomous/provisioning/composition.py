@@ -57,7 +57,7 @@ from ..ingress.service import EmployeeIngressService, IngressConflictError
 from ..journal.anchor import FileAnchor
 from ..journal.frame import JournalEvent
 from ..journal.projections import ProjectionState
-from ..journal.writer import JournalWriter
+from ..journal.writer import CommitState, JournalWriter
 from ..manager.cards import EmployeeRuntimeCardView
 from ..membership import (
     EmployeeMembershipService,
@@ -2086,6 +2086,16 @@ class EmployeeDepartmentRuntime:
                     "autonomous_employee_session_idle_ttl_seconds",
                     900.0,
                 ),
+                shadow_observer=(
+                    self._record_employee_shadow_observation
+                    if getattr(
+                        settings,
+                        "autonomous_employee_runtime_mode",
+                        "legacy_one_shot",
+                    )
+                    == "shadow"
+                    else None
+                ),
             )
             self._outbox_lifecycle = outbox_lifecycle
             self._outbox_delivery = EmployeeOutboxDeliveryCoordinator(
@@ -2137,6 +2147,55 @@ class EmployeeDepartmentRuntime:
             daemon=True,
         )
         self._dispatch_thread.start()
+
+    def _record_employee_shadow_observation(
+        self,
+        observation: Mapping[str, object],
+    ) -> None:
+        """Anchor digest-only shadow comparisons without changing legacy output."""
+
+        writer = self._writer
+        if writer is None:
+            return
+        allowed = {
+            "stage",
+            "attempt_id",
+            "agent_id",
+            "context_snapshot_hash",
+            "instruction_digest",
+            "legacy_input_digest",
+            "actor_input_digest",
+            "input_match",
+            "mismatch_code",
+            "status",
+            "output_digest",
+            "safe_error_code",
+        }
+        payload = {
+            key: value
+            for key, value in dict(observation).items()
+            if key in allowed and isinstance(value, (str, bool))
+        }
+        attempt_id = str(payload.get("attempt_id") or "")
+        stage = str(payload.get("stage") or "")
+        if not attempt_id.startswith("att_") or stage not in {"input", "terminal"}:
+            return
+        aggregate = f"employee-shadow:{attempt_id}"
+        event = JournalEvent(
+            event_type=f"employee.shadow.{stage}_observed",
+            aggregate_id=aggregate,
+            payload=payload,
+        )
+        with writer.transaction_guard():
+            last = writer.get_last_frame()
+            result = writer.commit(
+                (event,),
+                writer.get_aggregate_versions((aggregate,)),
+                expected_head_sequence=0 if last is None else last.sequence,
+                expected_head_hash="" if last is None else last.frame_hash,
+            )
+        if result.state is not CommitState.ANCHORED:
+            raise RuntimeError("employee shadow audit was not anchored")
 
     def _resolve_employee_requester_principal(
         self,

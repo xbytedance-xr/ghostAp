@@ -9,38 +9,8 @@ Verifies:
 
 from __future__ import annotations
 
-import sys
 from concurrent.futures import Future
 from unittest.mock import MagicMock
-
-# ---------------------------------------------------------------------------
-# Mock external dependencies that are not installed in the test environment.
-# This must happen before any import of src.feishu.* modules.
-# ---------------------------------------------------------------------------
-
-_EXTERNAL_MODULES = [
-    "lark_oapi", "lark_oapi.event", "lark_oapi.event.callback",
-    "lark_oapi.event.callback.model", "lark_oapi.event.callback.model.p2_card_action_trigger",
-    "lark_oapi.event.callback.model.p2_im_message_receive_v1",
-    "lark_oapi.api", "lark_oapi.api.core", "lark_oapi.api.core.request",
-    "lark_oapi.api.im", "lark_oapi.api.im.v1",
-    "lark_oapi.ws", "lark_oapi.ws.const", "lark_oapi.ws.enum",
-    "lark_oapi.ws.client",
-    "acp", "acp.client", "acp.interfaces", "acp.schema", "acp.helpers",
-    "acp.stdio",
-]
-
-
-class _FakeModule(MagicMock):
-    """MagicMock subclass accepted by importlib machinery."""
-    __spec__ = None
-    __path__ = []
-    __all__ = []
-
-
-for _mod_name in _EXTERNAL_MODULES:
-    sys.modules.setdefault(_mod_name, _FakeModule(name=_mod_name))
-
 
 # ---------------------------------------------------------------------------
 # Test helpers

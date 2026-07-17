@@ -690,6 +690,8 @@ class Settings(BaseSettings):
         le=3600,
         allow_inf_nan=False,
     )
+    # Keep the release default until the signed real-tenant persistent-team
+    # gates pass; local tests must not silently switch production behavior.
     autonomous_team_runtime_mode: Literal["legacy_pipeline", "coordinator"] = (
         "legacy_pipeline"
     )
@@ -744,6 +746,8 @@ class Settings(BaseSettings):
         ge=1,
         le=1_000_000,
     )
+    # ``shadow`` records digest-only actor-input comparisons while executing
+    # exactly one legacy call. ``actor`` never falls back to one-shot.
     autonomous_employee_runtime_mode: Literal[
         "legacy_one_shot", "shadow", "actor"
     ] = "legacy_one_shot"

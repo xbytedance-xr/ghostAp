@@ -924,7 +924,7 @@ class EmployeeKnowledgeService:
 - Modify: `.Memory/Abstract.md`
 - Create: `tests/autonomous/acceptance/test_persistent_employee_department.py`
 
-- [ ] **Step 1: Shadow workspace/knowledge**
+- [x] **Step 1: Shadow workspace/knowledge**
 
   v1 仍执行，v2 只投影目录、编译知识和比较 context；任何 mismatch 记录 secret-free audit，不改变结果。
 
@@ -940,7 +940,7 @@ class EmployeeKnowledgeService:
 
   删除 Team 固定 analysis/review/synthesis 执行路径和员工 one-shot `_run_acp_session` 生产调用点；保留必要的 legacy virtual Slock role 路径，不能误删普通 Slock 功能。
 
-- [ ] **Step 5: 运行完整自动验证**
+- [x] **Step 5: 运行完整自动验证**
 
   Run:
 
@@ -970,7 +970,7 @@ class EmployeeKnowledgeService:
   9. Fire 后 mailbox/session/Channel/permissions 全部撤销，workspace 按归档合同处理。
   10. 1/10/50 employee cold recovery 和 Channel reconnect soak 没有无界 session/process 增长。
 
-- [ ] **Step 7: 更新文档和 Memory**
+- [x] **Step 7: 更新文档和 Memory**
 
   记录最终默认模式、真实验收范围、剩余 hardened profile 风险和回滚方式。
 

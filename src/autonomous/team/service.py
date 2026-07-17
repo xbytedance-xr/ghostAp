@@ -245,6 +245,16 @@ class EmployeeTeamService:
             else None
         )
 
+    @property
+    def runtime_mode(self) -> str:
+        """Expose the selected path without treating local tests as cutover proof."""
+
+        return self._runtime_mode
+
+    @property
+    def persistent_coordinator_active(self) -> bool:
+        return self._coordinator is not None
+
     def start_task(
         self,
         *,

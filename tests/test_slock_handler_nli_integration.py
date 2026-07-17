@@ -119,7 +119,9 @@ class TestNLIUnknownFallback:
         engine.registry.find_by_name.return_value = None
         mock_handler._get_engine_manager().get_activated_engine.return_value = engine
 
-        mock_handler.handle_message("msg1", "chat1", "今天天气不错", None)
+        # UNKNOWN task-like input falls through; ambient chat is intentionally
+        # recorded without waking a model by the selective-wake contract.
+        mock_handler.handle_message("msg1", "chat1", "帮我分析这个失败堆栈", None)
 
         mock_handler._execute_routed_message.assert_called_once()
         mock_handler._dispatch_nli_intent.assert_not_called()

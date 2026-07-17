@@ -168,6 +168,7 @@ class EmployeeDispatchCoordinator:
         team_owner_resolver: Callable[[str], str] | None = None,
         employee_runtime_mode: str = "legacy_one_shot",
         employee_session_idle_ttl_seconds: float = 900.0,
+        shadow_observer: Callable[[Mapping[str, object]], None] | None = None,
     ) -> None:
         if not callable(environment_provider):
             raise TypeError("environment_provider is required")
@@ -193,6 +194,7 @@ class EmployeeDispatchCoordinator:
         self._gateway = gateway or EmployeeSlockGateway(
             runtime_mode=employee_runtime_mode,
             runtime_supervisor=self._employee_runtime,
+            shadow_observer=shadow_observer,
         )
         self._timeout_seconds = float(timeout_seconds)
         self._clock = clock or (lambda: datetime.now(UTC))

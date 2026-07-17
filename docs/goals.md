@@ -352,6 +352,14 @@
        Bot sender authority 与循环预算；云文档评论执行仍需 comment event normalization、逐文档授权、
        comment fetch 与 durable route，未完成前不得标为可用
   9. 真飞书租户体验与验收：
+     - 2026-07-17 自动化前置实现已完成：持久员工 workspace/bootstrap/Actor、动态 Team
+       Coordinator、群路由、恢复、知识 Wiki、状态卡和管理员恢复动作均已有本地合同
+     - `shadow` 模式现只执行一次 legacy 模型调用，同时锚定 Actor 输入与 workspace/context
+       digest 对比；不一致只写 secret-free audit，不改变用户结果
+     - 真实租户 manifest 新增 persistent actor、direct mention、Team review/revision、partial
+       context、selective wake 与 Fire 六组门禁；1/10/50 soak 继续强制
+     - 当前默认仍为 `legacy_one_shot` / `legacy_pipeline`，固定流水线和 one-shot fallback
+       尚未删除；必须等真实租户签名证据通过后才能切换和移除
      - staging + production Provisioning
      - 真实员工独立收发、桌面/移动 Slash、附件/话题/CardAction
      - 1/10/50 Bot soak、断线/重启/限流/故障注入

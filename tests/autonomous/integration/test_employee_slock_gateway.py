@@ -877,6 +877,122 @@ def test_actor_gateway_reuses_session_and_never_falls_back(tmp_path) -> None:
     gateway.close()
 
 
+def test_shadow_gateway_audits_actor_input_without_second_model_call(tmp_path) -> None:
+    from src.autonomous.ingress import dispatch as module
+    from src.autonomous.runtime.employee_session import EmployeeSessionBootstrap
+    from src.slock_engine.models import AgentIdentity
+
+    workspace = tmp_path / "employee" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "AGENTS.md").write_text("# Atlas identity\n", encoding="utf-8")
+    (tmp_path / "project").mkdir()
+    observations = []
+
+    class _Engine:
+        root_path = str(tmp_path / "project")
+
+        def __init__(self):
+            self.calls = 0
+
+        def run_agent_session(self, _agent, _prompt, **_kwargs):
+            self.calls += 1
+            return "legacy-result"
+
+        def preview_employee_session_prompt(self, employee, prompt):
+            return EmployeeSessionBootstrap.from_agent(
+                tenant_key="employee",
+                agent=employee,
+                project_root=self.root_path,
+            ).wrap_prompt(prompt)
+
+    binding = _binding(module)
+    agent = AgentIdentity(
+        agent_id=binding.agent_id,
+        agent_type=binding.tool,
+        model_name=_runtime_model(binding),
+        model_profile=binding.profile,
+        reasoning_effort=binding.effort,
+        permissions=list(binding.permissions),
+        capabilities=list(binding.capabilities),
+        security_profile="employee_v1",
+        workspace_path=str(workspace),
+    )
+    engine = _Engine()
+    gateway = module.EmployeeSlockGateway(
+        runtime_mode="shadow",
+        shadow_observer=observations.append,
+    )
+    permit = gateway.issue_permit(
+        binding=binding,
+        prompt="inspect this task",
+        engine=engine,
+        agent=agent,
+        timeout_seconds=30,
+        env={"PATH": "/usr/bin"},
+    )
+
+    result = gateway.execute_permit(permit)
+
+    assert result.output == "legacy-result"
+    assert engine.calls == 1
+    assert [item["stage"] for item in observations] == ["input", "terminal"]
+    assert observations[0]["input_match"] is True
+    assert observations[0]["context_snapshot_hash"] == binding.context_snapshot_hash
+    assert "inspect this task" not in str(observations)
+    assert observations[1]["output_digest"]
+
+
+def test_shadow_gateway_reports_real_legacy_prompt_drift(tmp_path) -> None:
+    from src.autonomous.ingress import dispatch as module
+    from src.slock_engine.models import AgentIdentity
+
+    workspace = tmp_path / "employee" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "AGENTS.md").write_text("# Atlas identity\n", encoding="utf-8")
+    (tmp_path / "project").mkdir()
+    observations = []
+
+    class _Engine:
+        root_path = str(tmp_path / "project")
+
+        def preview_employee_session_prompt(self, _employee, prompt):
+            return f"legacy-drift:{prompt}"
+
+        def run_agent_session(self, _agent, _prompt, **_kwargs):
+            return "legacy-result"
+
+    binding = _binding(module)
+    agent = AgentIdentity(
+        agent_id=binding.agent_id,
+        agent_type=binding.tool,
+        model_name=_runtime_model(binding),
+        model_profile=binding.profile,
+        reasoning_effort=binding.effort,
+        permissions=list(binding.permissions),
+        capabilities=list(binding.capabilities),
+        security_profile="employee_v1",
+        workspace_path=str(workspace),
+    )
+    gateway = module.EmployeeSlockGateway(
+        runtime_mode="shadow",
+        shadow_observer=observations.append,
+    )
+    permit = gateway.issue_permit(
+        binding=binding,
+        prompt="inspect this task",
+        engine=_Engine(),
+        agent=agent,
+        timeout_seconds=30,
+        env={"PATH": "/usr/bin"},
+    )
+
+    gateway.execute_permit(permit)
+
+    assert observations[0]["stage"] == "input"
+    assert observations[0]["input_match"] is False
+    assert observations[0]["legacy_input_digest"] != observations[0]["actor_input_digest"]
+
+
 def test_issued_permit_executes_a_frozen_agent_snapshot() -> None:
     from src.autonomous.ingress import dispatch as module
     from src.slock_engine.models import AgentIdentity

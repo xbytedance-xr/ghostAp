@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 _SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
 _SHARED_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+_LEGACY_EMPLOYEE_METRIC_INIT_LOCK = threading.Lock()
 
 
 class _EmployeeSessionLease:
@@ -398,6 +399,8 @@ class SlockEngine(BaseEngine):
         self._dirty = False  # dirty-flag for debounced task board persistence
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._agent_sessions: dict[str, object] = {}
+        self._legacy_employee_session_calls = 0
+        self._legacy_employee_session_calls_lock = threading.Lock()
         self._agent_execution_errors: dict[str, str] = {}
         self._escalations: list[EscalationRequest] = []
         self._escalation_retry_counts: dict[str, int] = {}
@@ -1526,6 +1529,7 @@ class SlockEngine(BaseEngine):
         """Run an ACP session for the agent. Public wrapper around _run_acp_session."""
         if agent.security_profile != "employee_v1":
             return self._run_acp_session(agent, prompt, timeout=timeout)
+        self._record_legacy_employee_session_call()
         if agent.agent_type.startswith("ttadk_"):
             raise SecurityPolicyDegradedError(
                 "employee backend lacks pre-spawn tool isolation"
@@ -1550,6 +1554,49 @@ class SlockEngine(BaseEngine):
 
             raise CancelledError("employee ACP session was canceled")
         return result
+
+    def preview_employee_session_prompt(
+        self,
+        agent: AgentIdentity,
+        prompt: str,
+    ) -> str:
+        """Build the exact employee prompt used by the legacy one-shot path.
+
+        Shadow mode calls this pure preview to detect input drift without
+        starting a second backend session or issuing another model call.
+        """
+
+        if agent.security_profile != "employee_v1":
+            raise ValueError("employee prompt preview requires employee_v1")
+        from src.autonomous.runtime.employee_session import EmployeeSessionBootstrap
+
+        bootstrap = EmployeeSessionBootstrap.from_agent(
+            tenant_key="employee",
+            agent=agent,
+            project_root=self.root_path,
+        )
+        return bootstrap.wrap_prompt(prompt)
+
+    @property
+    def legacy_employee_session_calls(self) -> int:
+        """Release metric: actor cutover requires this to remain zero."""
+
+        lock = getattr(self, "_legacy_employee_session_calls_lock", None)
+        if lock is None:
+            return 0
+        with lock:
+            return self._legacy_employee_session_calls
+
+    def _record_legacy_employee_session_call(self) -> None:
+        lock = getattr(self, "_legacy_employee_session_calls_lock", None)
+        if lock is None:
+            with _LEGACY_EMPLOYEE_METRIC_INIT_LOCK:
+                if not hasattr(self, "_legacy_employee_session_calls_lock"):
+                    self._legacy_employee_session_calls = 0
+                    self._legacy_employee_session_calls_lock = threading.Lock()
+                lock = self._legacy_employee_session_calls_lock
+        with lock:
+            self._legacy_employee_session_calls += 1
 
     def open_employee_session(
         self,
@@ -3180,16 +3227,7 @@ class SlockEngine(BaseEngine):
             execution_errors.pop(agent.agent_id, None)
             thread_id = f"slock_agent_{agent.agent_id}"
             if agent.security_profile == "employee_v1":
-                from src.autonomous.runtime.employee_session import (
-                    EmployeeSessionBootstrap,
-                )
-
-                bootstrap = EmployeeSessionBootstrap.from_agent(
-                    tenant_key=getattr(agent, "tenant_key", "") or "employee",
-                    agent=agent,
-                    project_root=self.root_path,
-                )
-                prompt = bootstrap.wrap_prompt(prompt)
+                prompt = self.preview_employee_session_prompt(agent, prompt)
             # NOTE: agent.permissions defines the least-privilege tool set for
             # this role (e.g. ["file_read"] for planner). Tool authorization should
             # be handled by the session layer once allowed_tools filtering is
