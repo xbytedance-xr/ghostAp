@@ -73,7 +73,12 @@ from ..supervisor.employee_channels import (
     ChannelProcessState,
     EmployeeChannelSupervisor,
 )
-from ..team import EmployeeTeamService, TeamAttemptResult, TeamTarget
+from ..team import (
+    EmployeeTeamService,
+    SessionCoordinatorDecisionProvider,
+    TeamAttemptResult,
+    TeamTarget,
+)
 from ..workforce.credential_vault import CredentialReceipt, CredentialVault
 from ..workforce.registry import ProjectedAgentRegistry
 from .fire_authority import JournalFireAuthority
@@ -222,7 +227,16 @@ class _RuntimeTeamBackend:
                 and getattr(status, "generation", None) == state.channel_generation
                 and employee.agent_id in ready_agent_ids
             ):
-                targets.append(TeamTarget(employee.agent_id, employee.name, employee.role))
+                targets.append(
+                    TeamTarget(
+                        employee.agent_id,
+                        employee.name,
+                        employee.role,
+                        tuple(employee.capabilities),
+                        "ready",
+                        0,
+                    )
+                )
         return tuple(sorted(targets, key=lambda item: item.agent_id))
 
     def submit(
@@ -316,7 +330,7 @@ class _RuntimeTeamBackend:
             attachment_total_bytes=0,
         )
         ack = ingress.accept(metadata, payload, request_id=f"req_{stable}")
-        ledger = runtime._group_ledger
+        ledger = getattr(runtime, "_group_ledger", None)
         if ledger is not None:
             ledger.publish(
                 tenant_key=tenant_key,
@@ -424,7 +438,20 @@ class _RuntimeTeamBackend:
             retry_allowed=False,
         )
 
-    def notify(self, message_id: str, chat_id: str, result: str) -> None:
+    def notify(
+        self,
+        message_id: str,
+        chat_id: str,
+        result: str,
+        *,
+        idempotency_key: str = "",
+    ) -> None:
+        if idempotency_key:
+            try:
+                self._notify(message_id, chat_id, result, idempotency_key)
+                return
+            except TypeError:
+                pass
         self._notify(message_id, chat_id, result)
 
 
@@ -538,7 +565,7 @@ class EmployeeDepartmentRuntime:
         release_trust_provider: ReleaseTrustProvider | None = None,
         notification_link: Callable[[DurableHireState, str, int], object] | None = None,
         notification_status: Callable[[DurableHireState, str], object] | None = None,
-        team_notification: Callable[[str, str, str], object] | None = None,
+        team_notification: Callable[..., object] | None = None,
         context_source_factory: EmployeeMessageSourceFactory | None = None,
         group_memory_backend: Any = None,
         slock_engine_manager: object | None = None,
@@ -675,12 +702,67 @@ class EmployeeDepartmentRuntime:
             )
             runtime._compose_fire(settings)
             if team_notification is not None and runtime._writer is not None:
+                team_runtime_mode = getattr(
+                    settings,
+                    "autonomous_team_runtime_mode",
+                    "legacy_pipeline",
+                )
+                decision_provider = None
+                if team_runtime_mode == "coordinator":
+                    if slock_engine_manager is None:
+                        raise RuntimeError("team coordinator project resolver is unavailable")
+
+                    def resolve_coordinator_cwd(run: object) -> str:
+                        binding = slock_engine_manager.resolve_employee_engine(
+                            chat_id=run.chat_id
+                        )
+                        return binding.canonical_root
+
+                    decision_provider = SessionCoordinatorDecisionProvider(
+                        tool=getattr(
+                            settings, "autonomous_team_coordinator_tool", "coco"
+                        ),
+                        model=getattr(
+                            settings, "autonomous_team_coordinator_model", ""
+                        ),
+                        profile=getattr(
+                            settings, "autonomous_team_coordinator_profile", ""
+                        ),
+                        effort=getattr(
+                            settings, "autonomous_team_coordinator_effort", ""
+                        ),
+                        cwd_resolver=resolve_coordinator_cwd,
+                    )
                 runtime._team = EmployeeTeamService(
                     writer=runtime._writer,
                     backend=_RuntimeTeamBackend(runtime, team_notification),
                     attempt_timeout_seconds=float(
                         settings.autonomous_team_step_timeout_seconds
                     ),
+                    runtime_mode=team_runtime_mode,
+                    blob_store=(
+                        runtime._ingress.blob_store
+                        if runtime._ingress is not None
+                        else None
+                    ),
+                    active_key_id=(
+                        runtime._data_keyring.active_key_id
+                        if runtime._data_keyring is not None
+                        else ""
+                    ),
+                    coordinator_tool=getattr(
+                        settings, "autonomous_team_coordinator_tool", "coco"
+                    ),
+                    coordinator_model=getattr(
+                        settings, "autonomous_team_coordinator_model", ""
+                    ),
+                    coordinator_profile=getattr(
+                        settings, "autonomous_team_coordinator_profile", ""
+                    ),
+                    coordinator_effort=getattr(
+                        settings, "autonomous_team_coordinator_effort", ""
+                    ),
+                    coordinator_decision_provider=decision_provider,
                 )
                 recovered_team_runs = runtime._team.recover()
                 if recovered_team_runs:

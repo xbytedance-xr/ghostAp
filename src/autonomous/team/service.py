@@ -11,8 +11,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Callable, Protocol
 
 from ..ingress.models import canonical_utc
+from ..journal.blob_store import BlobStore
 from ..journal.frame import JournalEvent
 from ..journal.writer import CommitState, JournalWriter
+from .coordinator import DecisionProvider, TeamCoordinatorActor
+from .models import TeamRunPhase
 
 MAX_HANDOFFS = 8
 MAX_DEPTH = 4
@@ -47,6 +50,9 @@ class TeamTarget:
     agent_id: str
     name: str
     role: str = ""
+    capabilities: tuple[str, ...] = ()
+    runtime_status: str = "ready"
+    mailbox_load: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +171,14 @@ class TeamBackend(Protocol):
         step_id: str,
     ) -> TeamAttemptResult: ...
 
-    def notify(self, message_id: str, chat_id: str, result: str) -> None: ...
+    def notify(
+        self,
+        message_id: str,
+        chat_id: str,
+        result: str,
+        *,
+        idempotency_key: str = "",
+    ) -> None: ...
 
 
 class EmployeeTeamService:
@@ -179,7 +192,19 @@ class EmployeeTeamService:
         attempt_timeout_seconds: float = 600.0,
         poll_seconds: float = 0.1,
         clock: Callable[[], datetime] | None = None,
+        runtime_mode: str = "legacy_pipeline",
+        blob_store: BlobStore | None = None,
+        active_key_id: str = "",
+        coordinator_tool: str = "coco",
+        coordinator_model: str = "",
+        coordinator_profile: str = "",
+        coordinator_effort: str = "",
+        coordinator_decision_provider: DecisionProvider | None = None,
     ) -> None:
+        if runtime_mode not in {"legacy_pipeline", "coordinator"}:
+            raise ValueError("invalid team runtime mode")
+        if runtime_mode == "coordinator" and (blob_store is None or not active_key_id):
+            raise ValueError("coordinator mode requires encrypted Blob storage")
         self._writer = writer
         self._backend = backend
         self._timeout = float(attempt_timeout_seconds)
@@ -189,6 +214,25 @@ class EmployeeTeamService:
         self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
         self._stop = threading.Event()
+        self._runtime_mode = runtime_mode
+        self._coordinator = (
+            TeamCoordinatorActor(
+                writer=writer,
+                blob_store=blob_store,
+                active_key_id=active_key_id,
+                backend=backend,
+                coordinator_tool=coordinator_tool,
+                coordinator_model=coordinator_model,
+                coordinator_profile=coordinator_profile,
+                coordinator_effort=coordinator_effort,
+                attempt_timeout_seconds=attempt_timeout_seconds,
+                poll_seconds=poll_seconds,
+                clock=clock,
+                decision_provider=coordinator_decision_provider,
+            )
+            if runtime_mode == "coordinator"
+            else None
+        )
 
     def start_task(
         self,
@@ -204,6 +248,15 @@ class EmployeeTeamService:
             raise ValueError("team task coordinates are required")
         if len(task) > _MAX_TASK_CHARS:
             raise ValueError("team task exceeds maximum length")
+        if self._coordinator is not None:
+            run = self._coordinator.start_task(
+                tenant_key=tenant_key,
+                message_id=message_id,
+                chat_id=chat_id,
+                requester_principal_id=requester_principal_id,
+                task=task,
+            )
+            return self._adapt_v2(run)
         run_id = "teamrun_" + hashlib.sha256(
             f"{tenant_key}\0{message_id}".encode()
         ).hexdigest()
@@ -255,6 +308,9 @@ class EmployeeTeamService:
         return state
 
     def get_run(self, run_id: str) -> TeamRunState | None:
+        if self._coordinator is not None:
+            run = self._coordinator.projection().runs.get(run_id)
+            return None if run is None else self._adapt_v2(run)
         state: TeamRunState | None = None
         for frame in self._writer.replay():
             for event in frame.events:
@@ -265,6 +321,8 @@ class EmployeeTeamService:
 
     def recover(self) -> int:
         """Terminalize runs whose in-memory instruction was lost on restart."""
+        if self._coordinator is not None:
+            return self._coordinator.recover()
         latest: dict[str, TeamRunState] = {}
         for frame in self._writer.replay():
             for event in frame.events:
@@ -280,6 +338,8 @@ class EmployeeTeamService:
         return len(pending)
 
     def close(self) -> None:
+        if self._coordinator is not None:
+            self._coordinator.close()
         with self._lock:
             if self._closed:
                 return
@@ -302,6 +362,28 @@ class EmployeeTeamService:
                     )
             self._stop.set()
         self._executor.shutdown(wait=True, cancel_futures=False)
+
+    @staticmethod
+    def _adapt_v2(run: object) -> TeamRunState:
+        phase = run.phase
+        status = (
+            "completed"
+            if phase is TeamRunPhase.COMPLETED
+            else "action_required"
+            if phase is TeamRunPhase.BLOCKED
+            else "canceled"
+            if phase is TeamRunPhase.CANCELED
+            else "running"
+        )
+        return TeamRunState(
+            run_id=run.run_id,
+            tenant_key=run.tenant_key,
+            message_id=run.message_id,
+            chat_id=run.chat_id,
+            requester_principal_id=run.requester_principal_id,
+            task_digest=run.task_ref.payload_hash,
+            status=status,
+        )
 
     def _can_progress(self, state: TeamRunState) -> bool:
         if self._stop.is_set():

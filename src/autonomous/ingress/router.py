@@ -823,7 +823,7 @@ class DurableEmployeeIngressRouter:
             with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
                 current_ingress,
                 current_payload,
-            ), self._mutex:
+            ), self._mutex, self._writer.transaction_guard():
                 self.rebuild_projection()
                 record = self._record(acceptance_id)
                 if record.state in {"queued", "dispatching", "terminal"}:
@@ -927,7 +927,7 @@ class DurableEmployeeIngressRouter:
             with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
                 final_ingress,
                 final_payload,
-            ), self._mutex:
+            ), self._mutex, self._writer.transaction_guard():
                 self.rebuild_projection()
                 record = self._record(acceptance_id)
                 if record.state in {"queued", "dispatching", "terminal"}:

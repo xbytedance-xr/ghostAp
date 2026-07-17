@@ -721,43 +721,43 @@ class EmployeeKnowledgeService:
 - `TeamCoordinatorActor` 是每 `(tenant_key, chat_id, project_id)` 的串行逻辑 Actor。
 - `CoordinatorDecision` 只接受冻结的 action/schema/bounds。
 
-- [ ] **Step 1: 写 projection/state machine 测试**
+- [x] **Step 1: 写 projection/state machine 测试**
 
   覆盖 created -> planning -> dispatching -> reviewing/revising -> completed/blocked/canceled；任意未解决 effect 不得进入终态。
 
-- [ ] **Step 2: 写动态分配测试**
+- [x] **Step 2: 写动态分配测试**
 
   按 role/capability/READY/mailbox load 形成候选；explicit mention 优先；CAS claim 只有一个赢家；无能力员工不会被硬塞任务。
 
-- [ ] **Step 3: 写 Coordinator bounds 测试**
+- [x] **Step 3: 写 Coordinator bounds 测试**
 
   非法 agent ID、循环依赖、超过 12 turns/32 assignments/4 fanout/8 handoffs、空 done checks 或伪造完成都被拒绝。
 
-- [ ] **Step 4: 写 restart 测试**
+- [x] **Step 4: 写 restart 测试**
 
   planning、assignment running、contribution committed、final notify executing 四个 kill 点恢复后继续或幂等收敛，不产生 `restart_instruction_unavailable`。
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_team_coordinator.py tests/autonomous/contract/test_team_run_projection.py tests/autonomous/chaos/test_team_run_recovery.py -q`
 
   Expected: FAIL because Team v1 stores only digests and fixed pipeline.
 
-- [ ] **Step 6: 实现 Coordinator actor**
+- [x] **Step 6: 实现 Coordinator actor**
 
   新配置：`autonomous_team_coordinator_tool="coco"`、model/profile/effort 空值委托 provider 默认；所有配置可显式覆盖为 Traex/Codex 等 ACP 工具。
 
-- [ ] **Step 7: 让 v1 service 成为兼容 facade**
+- [x] **Step 7: 让 v1 service 成为兼容 facade**
 
   `autonomous_team_runtime_mode=legacy_pipeline|coordinator` 控制显式切换；coordinator 模式不再进入固定三段 `_execute()`。
 
-- [ ] **Step 8: 验证**
+- [x] **Step 8: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_team_coordinator.py tests/autonomous/contract/test_team_run_projection.py tests/autonomous/chaos/test_team_run_recovery.py tests/autonomous/unit/test_employee_team_service.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
   Commit: `feat(team): add durable model-led coordination`
 

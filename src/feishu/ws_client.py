@@ -384,9 +384,12 @@ class FeishuWSClient:
                     if status in {"polling", "ready", "active", "action_required"}
                     else None
                 ),
-                team_notification=lambda message_id, _chat_id, result: self._reply_text(
-                    message_id,
-                    result,
+                team_notification=(
+                    lambda message_id, _chat_id, result, idempotency_key="": self._reply_text(
+                        message_id,
+                        result,
+                        idempotency_key=idempotency_key or None,
+                    )
                 ),
             )
         except Exception as exc:

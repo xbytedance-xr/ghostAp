@@ -411,6 +411,22 @@ def test_ingress_settings_defaults_are_bounded_and_visible_employees_are_enabled
     assert settings.autonomous_employee_attachment_staging_dir.endswith("/employee-attachments")
     assert settings.autonomous_employee_system_prompt_token_reserve == 4096
     assert settings.autonomous_visible_employee_limit == 8
+    assert settings.autonomous_team_runtime_mode == "legacy_pipeline"
+    assert settings.autonomous_team_coordinator_tool == "coco"
+    assert settings.autonomous_team_coordinator_model == ""
+
+
+def test_team_coordinator_settings_are_explicit_and_stable() -> None:
+    configured = Settings(
+        _env_file=None,
+        autonomous_team_runtime_mode="coordinator",
+        autonomous_team_coordinator_tool="codex",
+        autonomous_team_coordinator_model="gpt-test",
+    )
+    assert configured.autonomous_team_runtime_mode == "coordinator"
+    assert configured.autonomous_team_coordinator_tool == "codex"
+    with pytest.raises(ValueError, match="coordinator tool"):
+        Settings(_env_file=None, autonomous_team_coordinator_tool="")
 
 
 @pytest.mark.parametrize(
