@@ -12,6 +12,7 @@ from ..workforce.registry import (
     ProjectedCredentialError,
 )
 from .assembler import EmployeeThreadContext
+from .group_ledger import GroupContextLedger
 from .models import (
     AssembledContext,
     AuthorizedContextRequest,
@@ -110,6 +111,7 @@ class EmployeeContextService:
         group_memory_reader: AuthorizedGroupMemoryReader,
         source_factory: EmployeeMessageSourceFactory,
         config: ThreadContextConfig | None = None,
+        group_ledger: GroupContextLedger | None = None,
     ) -> None:
         dependencies = (
             registry_provider,
@@ -132,6 +134,7 @@ class EmployeeContextService:
         self._group_memory = group_memory_reader
         self._source_factory = source_factory
         self._config = config or ThreadContextConfig()
+        self._ledger = group_ledger
         self._condition = threading.Condition(threading.RLock())  # leaf lock: never held while acquiring a LockLevel lock
         self._admission_closed = False
         self._active_assemblies = 0
@@ -195,6 +198,46 @@ class EmployeeContextService:
         """Reject new assemblies while allowing already admitted work to drain."""
         with self._condition:
             self._admission_closed = True
+
+    def assemble_canonical_partial(
+        self,
+        request: AuthorizedContextRequest,
+        *,
+        warning_reason: ContextUnavailableReason,
+        causal_event_id: str = "",
+    ) -> AssembledContext:
+        """Use the anchored ledger only for non-authority enrichment failures."""
+
+        if warning_reason not in {
+            ContextUnavailableReason.PAGINATION,
+            ContextUnavailableReason.ORDERING,
+            ContextUnavailableReason.REVISION,
+            ContextUnavailableReason.DEADLINE,
+            ContextUnavailableReason.SOURCE,
+        }:
+            raise ContextUnavailableError(warning_reason)
+        if self._ledger is None:
+            raise ContextUnavailableError(warning_reason)
+        binding = self._authorize(request)
+        self._require_data_head(binding)
+        try:
+            l1 = self._data.memory_facade.read_l1(
+                request.agent_id,
+                request.tenant_key,
+                allow_unscoped_legacy=False,
+            ) or ""
+            l2 = self._group_memory.read(request)
+        except Exception:
+            l1 = ""
+            l2 = ""
+        self._require_same_authority(request, binding)
+        return self._ledger.assemble_partial(
+            request,
+            warning_reason=warning_reason,
+            causal_event_id=causal_event_id,
+            l1_summary=l1,
+            l2_summary=l2,
+        )
 
     def drain(self) -> None:
         """Wait until every admitted assembly has released its source lease."""

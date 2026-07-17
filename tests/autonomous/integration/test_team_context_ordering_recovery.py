@@ -84,3 +84,12 @@ def test_v1_team_assignment_ordering_failure_prevents_backend_execution() -> Non
 
     assert raised.value.reason is ContextUnavailableReason.ORDERING
     assert backend_calls == []
+
+
+def test_v2_contract_classifies_ordering_as_partial_not_team_terminal() -> None:
+    from src.autonomous.gateway.coordinator import _TRANSIENT_CONTEXT_REASONS
+
+    assert ContextUnavailableReason.ORDERING in _TRANSIENT_CONTEXT_REASONS
+    assert ContextUnavailableReason.SCOPE not in _TRANSIENT_CONTEXT_REASONS
+    assert ContextUnavailableReason.PERMISSION not in _TRANSIENT_CONTEXT_REASONS
+    assert ContextUnavailableReason.CURRENT_MESSAGE not in _TRANSIENT_CONTEXT_REASONS

@@ -26,6 +26,7 @@ from src.utils.path import canonicalize_user_home_path
 
 from ..acceptance.main_bot_audit import MainBotSendAuditLog
 from ..acceptance.release_trust import ReleaseTrustProvider
+from ..context.group_ledger import GroupContextLedger, GroupEventPayload
 from ..context.lark_source import LarkEmployeeMessageSourceFactory
 from ..context.models import ContextUnavailableError, ThreadContextConfig
 from ..context.runtime import (
@@ -315,6 +316,25 @@ class _RuntimeTeamBackend:
             attachment_total_bytes=0,
         )
         ack = ingress.accept(metadata, payload, request_id=f"req_{stable}")
+        ledger = runtime._group_ledger
+        if ledger is not None:
+            ledger.publish(
+                tenant_key=tenant_key,
+                chat_id=chat_id,
+                thread_id="",
+                message_id=message_id,
+                transport_principal_id="main_bot",
+                transport_event_id=f"evt_{stable}",
+                payload=GroupEventPayload(
+                    sender_id=requester_principal_id,
+                    sender_id_type="open_id",
+                    sender_type="user",
+                    sender_tenant_key=tenant_key,
+                    text=instruction,
+                    timestamp=time.time(),
+                ),
+                causal_event_id=f"{run_id}:{step_id}",
+            )
         return ack.acceptance.acceptance_id
 
     def result(self, acceptance_id: str) -> TeamAttemptResult | None:
@@ -478,6 +498,7 @@ class EmployeeDepartmentRuntime:
         self._environment_provider: EmployeeEnvironmentProvider | None = None
         self._context_source_factory: EmployeeMessageSourceFactory | None = None
         self._context_service: EmployeeContextService | None = None
+        self._group_ledger: GroupContextLedger | None = None
         self._context_acl: Any = None
         self._group_memory_backend: Any = None
         self._owns_group_memory_backend = False
@@ -1082,6 +1103,40 @@ class EmployeeDepartmentRuntime:
     def journal_frames(self) -> tuple[Any, ...]:
         return tuple(self._writer.replay()) if self._writer is not None else ()
 
+    def record_group_event(
+        self,
+        *,
+        tenant_key: str,
+        chat_id: str,
+        thread_id: str,
+        message_id: str,
+        sender_id: str,
+        text: str,
+        transport_principal_id: str = "main_bot",
+    ) -> bool:
+        """Publish one main-Bot observation into the canonical group ledger."""
+
+        ledger = self._group_ledger
+        if ledger is None or not all((tenant_key, chat_id, message_id, sender_id)):
+            return False
+        ledger.publish(
+            tenant_key=tenant_key,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            message_id=message_id,
+            transport_principal_id=transport_principal_id,
+            transport_event_id=f"main:{message_id}",
+            payload=GroupEventPayload(
+                sender_id=sender_id,
+                sender_id_type="open_id",
+                sender_type="user",
+                sender_tenant_key=tenant_key,
+                text=text,
+                timestamp=time.time(),
+            ),
+        )
+        return True
+
     def close(self) -> None:
         if self._closing:
             return
@@ -1112,8 +1167,9 @@ class EmployeeDepartmentRuntime:
         if self._dispatch_thread is not None:
             self._dispatch_thread.join(timeout=5.0)
             dispatch_safe = not self._dispatch_thread.is_alive()
-        if dispatch_safe and self._dispatch is not None:
-            dispatch_safe = cleanup("employee_actors", self._dispatch.close)
+        dispatch_close = getattr(self._dispatch, "close", None)
+        if dispatch_safe and callable(dispatch_close):
+            dispatch_safe = cleanup("employee_actors", dispatch_close)
         with self._future_lock:
             futures = tuple(self._futures)
         activities_safe = True
@@ -1238,6 +1294,12 @@ class EmployeeDepartmentRuntime:
                     "autonomous_employee_ingress_blob_dir",
                 ),
             )
+            self._group_ledger = GroupContextLedger(
+                writer=self._writer,
+                blob_store=self._ingress.blob_store,
+                active_key_id=self._data_keyring.active_key_id,
+                config=ThreadContextConfig(),
+            )
             self._outbox = EmployeeOutboxService.from_keyring(
                 writer=self._writer,
                 outbox_state=OutboxProjectionState(),
@@ -1288,6 +1350,7 @@ class EmployeeDepartmentRuntime:
                     pass
             self._attachments = None
             self._ingress = None
+            self._group_ledger = None
             self._outbox = None
             self._data = None
             self._execution_blockers = ("employee_ingress",)
@@ -3348,6 +3411,7 @@ class EmployeeDepartmentRuntime:
                 group_memory_reader=group_reader,
                 source_factory=source_factory,
                 config=ThreadContextConfig.from_settings(settings),
+                group_ledger=self._group_ledger,
             )
             self._context_blockers = ()
         except Exception as exc:
@@ -4078,9 +4142,53 @@ class EmployeeDepartmentRuntime:
             data = payload.get("data")
             acceptance_id = data.get("acceptance_id") if isinstance(data, dict) else None
             if isinstance(acceptance_id, str) and acceptance_id:
+                await asyncio.to_thread(
+                    self._record_employee_ingress_group_event,
+                    acceptance_id,
+                )
                 await asyncio.to_thread(self._handle_control_ingress, acceptance_id)
             return
         return
+
+    def _record_employee_ingress_group_event(self, acceptance_id: str) -> bool:
+        ingress = self._ingress
+        ledger = self._group_ledger
+        if ingress is None or ledger is None:
+            return False
+        record = ingress.state.by_acceptance_id.get(acceptance_id)
+        if record is None:
+            return False
+        payload = ingress.get_payload(acceptance_id)
+        if len(payload.normalized_parts) != 1:
+            return False
+        part = payload.normalized_parts[0]
+        if not isinstance(part, Mapping) or part.get("chat_type") != "group":
+            return False
+        coordinates = _bound_remote_coordinates(record.metadata, part)
+        if coordinates is None:
+            return False
+        chat_id, message_id, _root_id = coordinates
+        content = part.get("content")
+        text = content.get("text") if isinstance(content, Mapping) else content
+        if not isinstance(text, str) or not text:
+            return False
+        ledger.publish(
+            tenant_key=record.metadata.tenant_key,
+            chat_id=chat_id,
+            thread_id=str(part.get("feishu_thread_id", "")),
+            message_id=message_id,
+            transport_principal_id=record.metadata.bot_principal_id,
+            transport_event_id=record.metadata.event_id,
+            payload=GroupEventPayload(
+                sender_id=str(part.get("sender_id", "")),
+                sender_id_type=str(part.get("sender_id_type", "")),
+                sender_type=str(part.get("sender_type", "")),
+                sender_tenant_key=str(part.get("sender_tenant_key", "")),
+                text=text,
+                timestamp=time.time(),
+            ),
+        )
+        return True
 
     def _complete_status_activation(
         self,

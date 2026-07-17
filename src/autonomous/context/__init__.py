@@ -1,14 +1,23 @@
 """Employee-scoped, fail-closed context contracts and assembly."""
 
 from .assembler import EmployeeThreadContext
+from .group_ledger import (
+    CanonicalGroupContext,
+    GroupContextLedger,
+    GroupEventPayload,
+    GroupEventRecord,
+    GroupLedgerError,
+)
 from .models import (
     AssembledContext,
     AuthorizedContextRequest,
     ContextLayer,
     ContextLayerMetrics,
     ContextMessage,
+    ContextQuality,
     ContextUnavailableError,
     ContextUnavailableReason,
+    ContextWarning,
     EmployeeExecutionInput,
     EmployeeMessageScope,
     MessageRevision,
@@ -42,6 +51,8 @@ __all__ = [
     "AuthorizedGroupMemoryReader",
     "ContextLayer",
     "ContextLayerMetrics",
+    "ContextQuality",
+    "ContextWarning",
     "ContextMessage",
     "ContextUnavailableError",
     "ContextUnavailableReason",
@@ -55,6 +66,11 @@ __all__ = [
     "EmployeeMessageScope",
     "EmployeeScopedMessageSource",
     "EmployeeThreadContext",
+    "CanonicalGroupContext",
+    "GroupContextLedger",
+    "GroupEventPayload",
+    "GroupEventRecord",
+    "GroupLedgerError",
     "FeishuMessageSource",
     "MessagePage",
     "MessageRevision",

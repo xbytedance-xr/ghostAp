@@ -64,7 +64,6 @@ _TRANSIENT_CONTEXT_REASONS = frozenset(
         ContextUnavailableReason.ORDERING,
         ContextUnavailableReason.REVISION,
         ContextUnavailableReason.DEADLINE,
-        ContextUnavailableReason.MEMORY,
         ContextUnavailableReason.SOURCE,
     }
 )
@@ -290,21 +289,46 @@ class EmployeeDispatchCoordinator:
         try:
             snapshot = self._context.assemble(grant.request)
         except ContextUnavailableError as exc:
-            if exc.reason in _TRANSIENT_CONTEXT_REASONS:
-                record = self._router.defer_dispatch_candidate(
-                    grant.record.acceptance_id,
-                )
+            if is_team_assignment and exc.reason in _TRANSIENT_CONTEXT_REASONS:
+                partial = getattr(self._context, "assemble_canonical_partial", None)
+                if not callable(partial):
+                    record = self._router.defer_dispatch_candidate(
+                        grant.record.acceptance_id,
+                        terminal_reason="canonical_context_unavailable",
+                    )
+                    return None
+                try:
+                    snapshot = partial(
+                        grant.request,
+                        warning_reason=exc.reason,
+                        causal_event_id=f"{part['team_run_id']}:{part['team_step_id']}",
+                    )
+                except ContextUnavailableError:
+                    record = self._router.defer_dispatch_candidate(
+                        grant.record.acceptance_id,
+                        terminal_reason="canonical_context_unavailable",
+                    )
+                    logger.warning(
+                        "employee canonical context unavailable; candidate %s",
+                        "terminal" if record.state == "terminal" else "deferred",
+                    )
+                    return None
             else:
-                record = self._router.reject_dispatch_candidate(
-                    grant.record.acceptance_id,
-                    reason_code="context_unavailable",
+                if exc.reason in _TRANSIENT_CONTEXT_REASONS:
+                    record = self._router.defer_dispatch_candidate(
+                        grant.record.acceptance_id,
+                    )
+                else:
+                    record = self._router.reject_dispatch_candidate(
+                        grant.record.acceptance_id,
+                        reason_code="context_unavailable",
+                    )
+                logger.warning(
+                    "employee dispatch context unavailable; candidate %s: reason=%s",
+                    "terminal" if record.state == "terminal" else "deferred",
+                    exc.reason.value,
                 )
-            logger.warning(
-                "employee dispatch context unavailable; candidate %s: reason=%s",
-                "terminal" if record.state == "terminal" else "deferred",
-                exc.reason.value,
-            )
-            return None
+                return None
         self._validate_context_watermark(grant.request, snapshot)
         if team_deadline is not None and team_deadline <= self._clock():
             self._router.reject_dispatch_candidate(
@@ -438,6 +462,19 @@ class EmployeeDispatchCoordinator:
                     rendered=rendered,
                     authority_connection=authority_connection,
                 )
+                warning_events = tuple(
+                    JournalEvent(
+                        event_type="context.warning.recorded",
+                        aggregate_id=f"context-warning:{binding.attempt_id}:{item.code}",
+                        payload={
+                            "attempt_id": binding.attempt_id,
+                            "quality": snapshot.quality.value,
+                            "code": item.code,
+                            "source": item.source,
+                        },
+                    )
+                    for item in snapshot.warnings
+                )
                 events = (
                     router_event,
                     JournalEvent(
@@ -453,6 +490,7 @@ class EmployeeDispatchCoordinator:
                             "permit_id": binding.permit_id,
                         },
                     ),
+                    *warning_events,
                 )
                 result = self._commit_events_unlocked(events)
                 self._apply_committed_frame_unlocked(result.frame)

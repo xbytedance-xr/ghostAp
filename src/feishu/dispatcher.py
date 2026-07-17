@@ -150,6 +150,28 @@ class MessageDispatcher:
         """SMART mode routing logic."""
         from .slash_command_parser import SlashCommandParser
 
+        if chat_type == "group" and text:
+            runtime = getattr(self.client, "_employee_department_runtime", None)
+            record = getattr(runtime, "record_group_event", None)
+            if callable(record):
+                try:
+                    from ..thread import (
+                        get_current_sender_id,
+                        get_current_tenant_key,
+                        get_current_thread_id,
+                    )
+
+                    record(
+                        tenant_key=get_current_tenant_key() or "",
+                        chat_id=chat_id,
+                        thread_id=get_current_thread_id() or "",
+                        message_id=message_id,
+                        sender_id=get_current_sender_id() or "",
+                        text=text,
+                    )
+                except Exception:
+                    logger.warning("canonical group event publication failed", exc_info=True)
+
         _pid = project.project_id if project else None
         current_mode, is_in_programming = self.client._get_effective_mode(chat_id, project_id=_pid)
         is_topic_engine_context = (

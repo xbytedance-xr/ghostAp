@@ -126,6 +126,7 @@ _TERMINAL_REASONS = frozenset(
         "action_required",
         "slock_unavailable",
         "context_unavailable",
+        "canonical_context_unavailable",
         "team_step_inactive",
         "team_step_expired",
         "team_step_canceled",
@@ -140,6 +141,7 @@ _DISPATCH_REJECTION_REASONS = frozenset(
     {
         "slock_unavailable",
         "context_unavailable",
+        "canonical_context_unavailable",
         "team_step_inactive",
         "team_step_expired",
         "team_step_canceled",
@@ -1004,6 +1006,7 @@ class DurableEmployeeIngressRouter:
         acceptance_id: str,
         *,
         max_failures: int = 3,
+        terminal_reason: str = "context_unavailable",
     ) -> RouterLifecycleRecord:
         """Persist one transient Context failure and bound retries durably."""
 
@@ -1011,11 +1014,16 @@ class DurableEmployeeIngressRouter:
             raise TypeError("max_failures must be an integer")
         if max_failures < 1:
             raise ValueError("max_failures must be positive")
+        if terminal_reason not in {
+            "context_unavailable",
+            "canonical_context_unavailable",
+        }:
+            raise ValueError("invalid Context terminal reason")
         with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
             record = self._record(acceptance_id)
             if record.state == "terminal":
-                if record.reason_code != "context_unavailable":
+                if record.reason_code != terminal_reason:
                     raise RouterProjectionError(
                         "Router context retry conflicts with terminal"
                     )
@@ -1026,7 +1034,7 @@ class DurableEmployeeIngressRouter:
                 )
             failure_count = record.context_failures + 1
             if failure_count >= max_failures:
-                return self._terminal_unlocked(record, "context_unavailable")
+                return self._terminal_unlocked(record, terminal_reason)
             delay = min(
                 self._context_retry_max_seconds,
                 self._context_retry_base_seconds * (2 ** (failure_count - 1)),

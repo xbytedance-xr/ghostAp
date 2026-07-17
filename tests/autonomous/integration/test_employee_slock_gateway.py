@@ -1809,6 +1809,67 @@ def test_inactive_team_assignment_is_rejected_before_context_assembly(tmp_path) 
     harness.close()
 
 
+def test_team_ordering_failure_uses_canonical_partial_and_records_warning(
+    tmp_path,
+) -> None:
+    from dataclasses import replace as dataclass_replace
+
+    from src.autonomous.context import (
+        ContextQuality,
+        ContextUnavailableError,
+        ContextUnavailableReason,
+        ContextWarning,
+    )
+
+    harness = _real_coordinator_harness(
+        tmp_path,
+        team_assignment=True,
+        team_deadline_at="2026-07-14T00:02:00Z",
+    )
+    aggregate = "teamrun_inactive:analysis"
+    _commit_team_effect(harness.writer, aggregate, "prepared")
+    _commit_team_effect(harness.writer, aggregate, "executing")
+    complete_context = harness.coordinator._context  # noqa: SLF001
+
+    class _OrderingThenLedger:
+        def assemble(self, _request):
+            raise ContextUnavailableError(ContextUnavailableReason.ORDERING)
+
+        def assemble_canonical_partial(
+            self,
+            request,
+            *,
+            warning_reason,
+            causal_event_id,
+        ):
+            assert warning_reason is ContextUnavailableReason.ORDERING
+            assert causal_event_id == "teamrun_inactive:analysis"
+            return dataclass_replace(
+                complete_context.assemble(request),
+                quality=ContextQuality.CANONICAL_PARTIAL,
+                warnings=(ContextWarning("order_unavailable", "lark"),),
+            )
+
+    harness.coordinator._context = _OrderingThenLedger()  # noqa: SLF001
+    prepared = harness.coordinator.prepare_next()
+
+    assert prepared is not None
+    warning_events = [
+        event
+        for frame in harness.writer.replay()
+        for event in frame.events
+        if event.event_type == "context.warning.recorded"
+    ]
+    assert len(warning_events) == 1
+    assert warning_events[0].payload["quality"] == "canonical_partial"
+    assert warning_events[0].payload["code"] == "order_unavailable"
+    assert all(
+        record.reason_code != "context_unavailable"
+        for record in harness.router.state.by_acceptance_id.values()
+    )
+    harness.close()
+
+
 def test_team_absolute_deadline_propagates_remaining_permit_duration(tmp_path) -> None:
     harness = _real_coordinator_harness(
         tmp_path,

@@ -602,35 +602,35 @@ class EmployeeRuntimeSupervisor:
 - `GroupEventRecord` 保存 tenant/chat/thread/message、transport principal、Journal sequence、encrypted payload ref、dedup key 和 causal event ID。
 - `CanonicalGroupContext` 明确 `COMPLETE` 或 `CANONICAL_PARTIAL`。
 
-- [ ] **Step 1: 写 main Bot/employee Bot 跨入口 dedup 测试**
+- [x] **Step 1: 写 main Bot/employee Bot 跨入口 dedup 测试**
 
   同一飞书 message/event 被两个 Bot 看到时只形成一个 canonical event；authority 字段不能由 payload 覆盖。
 
-- [ ] **Step 2: 写排序降级测试**
+- [x] **Step 2: 写排序降级测试**
 
   ordering/pagination/revision/deadline/source 失败时，已锚定当前事件使用 Journal sequence 构造 partial window；scope/permission/current-event 失败仍拒绝。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_group_context_ledger.py tests/autonomous/integration/test_team_context_ordering_recovery.py tests/autonomous/integration/test_employee_slock_gateway.py -q`
 
   Expected: FAIL because no canonical ledger or quality contract exists.
 
-- [ ] **Step 4: 接入 group ledger**
+- [x] **Step 4: 接入 group ledger**
 
   主 Bot 普通群消息和员工 Bot direct mention 在 durable ACK 后发布 group event；内部 Team assignment 只引用 event/Blob，不伪装成需要重新抓取的飞书消息。
 
-- [ ] **Step 5: 拆分 hard failure 与 enrichment warning**
+- [x] **Step 5: 拆分 hard failure 与 enrichment warning**
 
   删除 `_TRANSIENT_CONTEXT_REASONS` 的一刀切终态语义；Router 只对 authority failure 终止，对 enrichment failure 记录 `context.warning.recorded` 并继续。
 
-- [ ] **Step 6: 验证错误码**
+- [x] **Step 6: 验证错误码**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_group_context_ledger.py tests/autonomous/integration/test_team_context_ordering_recovery.py tests/autonomous/integration/test_employee_slock_gateway.py -q`
 
   Expected: PASS；测试中不再出现 Team `context_unavailable`，并能看到 `canonical_partial/order_unavailable`。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
   Commit: `fix(context): decouple team work from lark ordering`
 

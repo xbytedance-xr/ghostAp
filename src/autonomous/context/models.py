@@ -64,6 +64,23 @@ class ContextLayer(str, Enum):
     L2_GROUP = "l2_group"
 
 
+class ContextQuality(str, Enum):
+    COMPLETE = "complete"
+    CANONICAL_PARTIAL = "canonical_partial"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextWarning:
+    code: str
+    source: str
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.code) is None:
+            raise ValueError("invalid context warning code")
+        if self.source not in {"lark", "ledger", "memory"}:
+            raise ValueError("invalid context warning source")
+
+
 def _require_prefix(value: str, field_name: str, prefix: str) -> None:
     suffix = value[len(prefix):] if isinstance(value, str) and value.startswith(prefix) else ""
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", suffix) is None:
@@ -332,6 +349,8 @@ class AssembledContext:
     system_prompt_tokens_reserved: int = 0
     constraints_digest: str = ""
     tokens_per_char: float = 0.3
+    quality: ContextQuality = ContextQuality.COMPLETE
+    warnings: tuple[ContextWarning, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thread_messages", tuple(self.thread_messages))
@@ -339,6 +358,13 @@ class AssembledContext:
         object.__setattr__(self, "layers_used", tuple(self.layers_used))
         object.__setattr__(self, "layer_metrics", tuple(self.layer_metrics))
         object.__setattr__(self, "trimming_trace", tuple(self.trimming_trace))
+        object.__setattr__(self, "warnings", tuple(self.warnings))
+        if not isinstance(self.quality, ContextQuality):
+            raise TypeError("quality must be ContextQuality")
+        if any(not isinstance(item, ContextWarning) for item in self.warnings):
+            raise TypeError("warnings must contain ContextWarning")
+        if self.quality is ContextQuality.COMPLETE and self.warnings:
+            raise ValueError("complete context cannot contain warnings")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
             for value in (
@@ -378,6 +404,8 @@ class AssembledContext:
             "system_prompt_tokens_reserved": self.system_prompt_tokens_reserved,
             "constraints_digest": self.constraints_digest,
             "tokens_per_char": self.tokens_per_char,
+            "quality": self.quality.value,
+            "warnings": tuple(item.code for item in self.warnings),
         }
 
 
@@ -592,6 +620,8 @@ __all__ = [
     "AuthorizedContextRequest",
     "ContextLayer",
     "ContextLayerMetrics",
+    "ContextQuality",
+    "ContextWarning",
     "ContextMessage",
     "ContextUnavailableError",
     "ContextUnavailableReason",
