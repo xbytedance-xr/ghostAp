@@ -1112,6 +1112,8 @@ class EmployeeDepartmentRuntime:
         if self._dispatch_thread is not None:
             self._dispatch_thread.join(timeout=5.0)
             dispatch_safe = not self._dispatch_thread.is_alive()
+        if dispatch_safe and self._dispatch is not None:
+            dispatch_safe = cleanup("employee_actors", self._dispatch.close)
         with self._future_lock:
             futures = tuple(self._futures)
         activities_safe = True
@@ -1596,6 +1598,16 @@ class EmployeeDepartmentRuntime:
                 timeout_seconds=getattr(
                     settings,
                     "autonomous_team_step_timeout_seconds",
+                ),
+                employee_runtime_mode=getattr(
+                    settings,
+                    "autonomous_employee_runtime_mode",
+                    "legacy_one_shot",
+                ),
+                employee_session_idle_ttl_seconds=getattr(
+                    settings,
+                    "autonomous_employee_session_idle_ttl_seconds",
+                    900.0,
                 ),
             )
             self._outbox_lifecycle = outbox_lifecycle

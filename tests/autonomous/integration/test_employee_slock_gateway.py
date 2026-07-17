@@ -790,6 +790,93 @@ def test_forged_or_reconstructed_permit_requires_gateway_issuance() -> None:
         permit.env["HOME"] = "/tmp/forged"  # type: ignore[index]
 
 
+def test_actor_gateway_reuses_session_and_never_falls_back(tmp_path) -> None:
+    from src.autonomous.ingress import dispatch as module
+    from src.autonomous.runtime.employee_supervisor import EmployeeRuntimeSupervisor
+    from src.slock_engine.models import AgentIdentity
+
+    workspace = tmp_path / "employee" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "AGENTS.md").write_text("# Persistent employee\n", encoding="utf-8")
+
+    class _Session:
+        def __init__(self) -> None:
+            self.closed = False
+            self.prompts = []
+
+        def send_prompt(self, prompt, *, timeout):
+            del timeout
+            self.prompts.append(prompt)
+            return SimpleNamespace(text="done")
+
+        def is_server_healthy(self):
+            return not self.closed
+
+        def close(self):
+            self.closed = True
+
+    class _Engine:
+        root_path = str(tmp_path / "project")
+
+        def __init__(self):
+            self.sessions = []
+            self.legacy_calls = 0
+
+        def open_employee_session(self, _agent, *, env):
+            assert env == {"PATH": "/usr/bin"}
+            self.sessions.append(_Session())
+            return self.sessions[-1]
+
+        def run_agent_session(self, *_args, **_kwargs):
+            self.legacy_calls += 1
+            raise AssertionError("actor mode must not fall back")
+
+    engine = _Engine()
+    (tmp_path / "project").mkdir()
+    supervisor = EmployeeRuntimeSupervisor()
+    gateway = module.EmployeeSlockGateway(
+        runtime_mode="actor",
+        runtime_supervisor=supervisor,
+    )
+    first_binding = _binding(module)
+    agent = AgentIdentity(
+        agent_id=first_binding.agent_id,
+        agent_type=first_binding.tool,
+        model_name=_runtime_model(first_binding),
+        model_profile=first_binding.profile,
+        reasoning_effort=first_binding.effort,
+        permissions=list(first_binding.permissions),
+        capabilities=list(first_binding.capabilities),
+        security_profile="employee_v1",
+        workspace_path=str(workspace),
+    )
+    bindings = (
+        first_binding,
+        replace(
+            first_binding,
+            permit_id="prm_second",
+            attempt_id="att_second",
+            acceptance_id="acc_second",
+            envelope_id="ing_second",
+        ),
+    )
+    for binding in bindings:
+        permit = gateway.issue_permit(
+            binding=binding,
+            prompt="budgeted",
+            engine=engine,
+            agent=agent,
+            timeout_seconds=30,
+            env={"PATH": "/usr/bin"},
+        )
+        assert gateway.execute_permit(permit).status.value == "completed"
+
+    assert len(engine.sessions) == 1
+    assert len(engine.sessions[0].prompts) == 2
+    assert engine.legacy_calls == 0
+    gateway.close()
+
+
 def test_issued_permit_executes_a_frozen_agent_snapshot() -> None:
     from src.autonomous.ingress import dispatch as module
     from src.slock_engine.models import AgentIdentity

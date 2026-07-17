@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from src.acp.employee_selection import compose_employee_model_selection
 from src.slock_engine.models import AgentIdentity
 
+from ..runtime.employee_actor import EmployeeAssignment, EmployeeAssignmentTerminal
+from ..runtime.employee_session import EmployeeSessionBootstrap
+from ..runtime.employee_supervisor import EmployeeRuntimeSupervisor
 from .models import (
     AgentExecutionSpec,
     DispatchBinding,
@@ -35,7 +38,18 @@ class _IssuedPermit:
 class EmployeeSlockGateway:
     """Mint and consume process-local capabilities for already-anchored attempts."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_mode: str = "legacy_one_shot",
+        runtime_supervisor: EmployeeRuntimeSupervisor | None = None,
+    ) -> None:
+        if runtime_mode not in {"legacy_one_shot", "shadow", "actor"}:
+            raise ValueError("invalid employee runtime mode")
+        if runtime_mode == "actor" and runtime_supervisor is None:
+            raise ValueError("actor mode requires employee runtime supervisor")
+        self._runtime_mode = runtime_mode
+        self._runtime = runtime_supervisor
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._issued: dict[str, _IssuedPermit] = {}
         self._running: dict[str, _IssuedPermit] = {}
@@ -96,14 +110,17 @@ class EmployeeSlockGateway:
         if target is None:
             return False
         if running is not None:
-            cancel = getattr(running.permit.engine, "cancel_employee_session", None)
-            if not callable(cancel):
-                cancel = getattr(running.permit.engine, "stop_agent", None)
-            if callable(cancel):
-                try:
-                    cancel(binding.agent_id)
-                except Exception:
-                    pass
+            if self._runtime_mode == "actor" and self._runtime is not None:
+                self._runtime.cancel(binding.attempt_id)
+            else:
+                cancel = getattr(running.permit.engine, "cancel_employee_session", None)
+                if not callable(cancel):
+                    cancel = getattr(running.permit.engine, "stop_agent", None)
+                if callable(cancel):
+                    try:
+                        cancel(binding.agent_id)
+                    except Exception:
+                        pass
         return True
 
     def execute_permit(self, permit: DispatchPermit) -> GatewayExecutionResult:
@@ -129,7 +146,7 @@ class EmployeeSlockGateway:
             agent = issued.agent.materialize()
             self._validate_agent_binding(permit.binding, agent)
             runner = getattr(permit.engine, "run_agent_session", None)
-            if not callable(runner):
+            if self._runtime_mode != "actor" and not callable(runner):
                 raise DispatchPermitAuthorityError("permit engine is invalid")
         except BaseException:
             with self._lock:
@@ -138,7 +155,36 @@ class EmployeeSlockGateway:
             raise
         result: GatewayExecutionResult
         try:
-            output = runner(
+            if self._runtime_mode == "actor":
+                assert self._runtime is not None
+                opener = getattr(permit.engine, "open_employee_session", None)
+                if not callable(opener):
+                    raise DispatchPermitAuthorityError(
+                        "permit engine lacks reusable employee sessions"
+                    )
+                bootstrap = EmployeeSessionBootstrap.from_agent(
+                    tenant_key=permit.binding.tenant_key,
+                    agent=agent,
+                    project_root=str(getattr(permit.engine, "root_path", "")),
+                )
+                assignment = EmployeeAssignment(
+                    assignment_id=permit.binding.attempt_id,
+                    bootstrap=bootstrap,
+                    prompt=permit.prompt,
+                    timeout_seconds=permit.timeout_seconds,
+                    payload_ref=permit.binding.envelope_id,
+                    session_factory=lambda _bootstrap: opener(
+                        agent,
+                        env=dict(permit.env),
+                    ),
+                )
+                self._runtime.submit(assignment)
+                terminal = self._runtime.wait_terminal(
+                    assignment.assignment_id,
+                    timeout=permit.timeout_seconds + 5.0,
+                )
+                return self._complete_actor_execution(permit, terminal)
+            output = runner(  # type: ignore[misc]
                 agent,
                 permit.prompt,
                 timeout=permit.timeout_seconds,
@@ -185,6 +231,37 @@ class EmployeeSlockGateway:
                 safe_error_code="slock_session_canceled",
             )
         return result
+
+    def close(self) -> None:
+        if self._runtime is not None:
+            self._runtime.close()
+
+    def _complete_actor_execution(
+        self,
+        permit: DispatchPermit,
+        terminal: EmployeeAssignmentTerminal,
+    ) -> GatewayExecutionResult:
+        status = {
+            "completed": GatewayExecutionStatus.COMPLETED,
+            "timeout": GatewayExecutionStatus.TIMEOUT,
+            "canceled": GatewayExecutionStatus.CANCELED,
+            "action_required": GatewayExecutionStatus.ACTION_REQUIRED,
+        }.get(terminal.status, GatewayExecutionStatus.FAILED)
+        with self._lock:
+            self._running.pop(permit.binding.permit_id, None)
+            canceled = permit.binding.permit_id in self._cancel_requested
+            self._cancel_requested.discard(permit.binding.permit_id)
+        if canceled:
+            status = GatewayExecutionStatus.CANCELED
+        return GatewayExecutionResult(
+            status=status,
+            output=terminal.output if status is GatewayExecutionStatus.COMPLETED else "",
+            safe_error_code=(
+                ""
+                if status is GatewayExecutionStatus.COMPLETED
+                else terminal.error_code or f"employee_actor_{status.value}"
+            ),
+        )
 
     @staticmethod
     def _validate_agent_binding(

@@ -548,39 +548,39 @@ class EmployeeRuntimeSupervisor:
     def close(self) -> None: ...
 ```
 
-- [ ] **Step 1: 写 Actor 串行邮箱测试**
+- [x] **Step 1: 写 Actor 串行邮箱测试**
 
   同一员工一次只执行一个 assignment；不同员工可并行；重复 assignment ID 幂等；cancel、timeout 和 close 均有唯一终态。
 
-- [ ] **Step 2: 写 ACP session 复用测试**
+- [x] **Step 2: 写 ACP session 复用测试**
 
   相同 `EmployeeSessionKey` 的两个连续任务只启动一次后端；identity/instruction/project 变化会 drain 旧 session 并创建新 session；idle TTL 回收后员工仍为 READY_COLD。
 
-- [ ] **Step 3: 写 crash recovery 测试**
+- [x] **Step 3: 写 crash recovery 测试**
 
   在 mailbox anchor 后、session start 前、prompt 中、result anchor 前 kill；恢复不得重复已提交 effect，并从安全 checkpoint 重新派发或进入具体 action-required。
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_actor.py tests/autonomous/integration/test_employee_session_reuse.py tests/autonomous/chaos/test_employee_actor_recovery.py -q`
 
   Expected: FAIL because supervisor/actor are absent.
 
-- [ ] **Step 5: 实现 actor 和 session lease**
+- [x] **Step 5: 实现 actor 和 session lease**
 
   复用 `SyncSession` 的 `is_server_healthy()`、`cancel()`、`close()`；不修改旧 `AgentRuntime` 的 broker turn-loop语义。所有 ACP 外部调用继续满足 effect PREPARED/EXECUTING 先锚定。
 
-- [ ] **Step 6: Gateway 切到 supervisor**
+- [x] **Step 6: Gateway 切到 supervisor**
 
   `EmployeeSlockGateway` 只负责授权和兼容 prompt 构建；不再直接调用 `_run_acp_session()`。保留 `autonomous_employee_runtime_mode=legacy_one_shot|shadow|actor` 作为发布期显式切换，失败时不自动回退。
 
-- [ ] **Step 7: 验证**
+- [x] **Step 7: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_actor.py tests/autonomous/integration/test_employee_session_reuse.py tests/autonomous/chaos/test_employee_actor_recovery.py tests/autonomous/integration/test_employee_slock_gateway.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
   Commit: `feat(runtime): add recoverable employee actors`
 

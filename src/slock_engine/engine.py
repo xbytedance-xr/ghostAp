@@ -60,6 +60,37 @@ _SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
 _SHARED_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
+class _EmployeeSessionLease:
+    """Keep one isolated backend session registered until Actor recycle."""
+
+    def __init__(self, engine: "SlockEngine", agent_id: str, session: object) -> None:
+        self._engine = engine
+        self._agent_id = agent_id
+        self._session = session
+        self._closed = False
+
+    def send_prompt(self, prompt: str, *, timeout: float):
+        return self._session.send_prompt(prompt, timeout=timeout)  # type: ignore[attr-defined]
+
+    def is_server_healthy(self) -> bool:
+        probe = getattr(self._session, "is_server_healthy", None)
+        return bool(probe()) if callable(probe) else not self._closed
+
+    def cancel(self) -> None:
+        cancel = getattr(self._session, "cancel", None)
+        if callable(cancel):
+            cancel()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        with self._engine._lock:
+            if self._engine._agent_sessions.get(self._agent_id) is self._session:
+                del self._engine._agent_sessions[self._agent_id]
+        close_session_safely(self._session)
+
+
 def _positive_seconds(value: object, default: float) -> float:
     """Return a positive timeout value, falling back for mocks or invalid config."""
     if isinstance(value, bool):
@@ -1519,6 +1550,50 @@ class SlockEngine(BaseEngine):
 
             raise CancelledError("employee ACP session was canceled")
         return result
+
+    def open_employee_session(
+        self,
+        agent: AgentIdentity,
+        *,
+        env: dict[str, str],
+    ) -> _EmployeeSessionLease:
+        """Open a reusable employee_v1 session for an EmployeeActor."""
+
+        if agent.security_profile != "employee_v1":
+            raise SecurityPolicyDegradedError("reusable lease requires employee_v1")
+        if agent.agent_type.startswith("ttadk_"):
+            raise SecurityPolicyDegradedError(
+                "employee backend lacks pre-spawn tool isolation"
+            )
+        if not isinstance(env, dict):
+            raise SecurityPolicyDegradedError(
+                "employee session environment is not explicitly scoped"
+            )
+        from src.agent_session.factory import employee_session_environment
+
+        with employee_session_environment(env):
+            session = create_engine_session(
+                agent_type=agent.agent_type,
+                cwd=self.root_path,
+                model_name=agent.model_name or None,
+                thread_id=f"employee_actor_{agent.agent_id}",
+                auto_approve=True,
+                require_tool_filter=True,
+            )
+        if session is None:
+            raise RuntimeError("employee backend session creation failed")
+        try:
+            self._apply_tool_restrictions(session, agent)
+        except Exception:
+            close_session_safely(session)
+            raise
+        with self._lock:
+            previous = self._agent_sessions.get(agent.agent_id)
+            if previous is not None and previous is not session:
+                close_session_safely(session)
+                raise RuntimeError("employee already owns an active backend session")
+            self._agent_sessions[agent.agent_id] = session
+        return _EmployeeSessionLease(self, agent.agent_id, session)
 
     def run_agent_session_full(
         self,

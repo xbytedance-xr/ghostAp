@@ -730,6 +730,15 @@ class Settings(BaseSettings):
         ge=1,
         le=1_000_000,
     )
+    autonomous_employee_runtime_mode: Literal[
+        "legacy_one_shot", "shadow", "actor"
+    ] = "legacy_one_shot"
+    autonomous_employee_session_idle_ttl_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        le=86_400,
+        allow_inf_nan=False,
+    )
     autonomous_employee_queue_per_employee_limit: int = Field(default=8, ge=1, le=10_000)
     autonomous_employee_queue_per_team_limit: int = Field(default=32, ge=1, le=100_000)
     autonomous_employee_queue_global_limit: int = Field(default=128, ge=1, le=1_000_000)

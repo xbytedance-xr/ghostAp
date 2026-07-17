@@ -31,6 +31,7 @@ from ..ingress.models import parse_canonical_utc
 from ..journal.frame import JournalEvent
 from ..journal.projections import apply_frame
 from ..journal.writer import CommitState, JournalWriter
+from ..runtime.employee_supervisor import EmployeeRuntimeSupervisor
 from ..supervisor.channel_models import ChannelProcessState
 from ..workforce.registry import ProjectedAgentRegistry
 from .context_prompt import RenderedEmployeePrompt, render_employee_context
@@ -166,6 +167,8 @@ class EmployeeDispatchCoordinator:
         attempt_lifecycle: EmployeeAttemptLifecycle | None = None,
         admin_principal_ids: frozenset[str] = frozenset(),
         team_owner_resolver: Callable[[str], str] | None = None,
+        employee_runtime_mode: str = "legacy_one_shot",
+        employee_session_idle_ttl_seconds: float = 900.0,
     ) -> None:
         if not callable(environment_provider):
             raise TypeError("environment_provider is required")
@@ -180,7 +183,18 @@ class EmployeeDispatchCoordinator:
         self._context = context_service
         self._environment_provider = environment_provider
         self._registry_factory = registry_factory or ProjectedAgentRegistry
-        self._gateway = gateway or EmployeeSlockGateway()
+        self._employee_runtime = (
+            EmployeeRuntimeSupervisor(
+                writer=writer,
+                idle_ttl_seconds=employee_session_idle_ttl_seconds,
+            )
+            if gateway is None and employee_runtime_mode == "actor"
+            else None
+        )
+        self._gateway = gateway or EmployeeSlockGateway(
+            runtime_mode=employee_runtime_mode,
+            runtime_supervisor=self._employee_runtime,
+        )
         self._timeout_seconds = float(timeout_seconds)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._attempt_lifecycle = attempt_lifecycle
@@ -189,6 +203,15 @@ class EmployeeDispatchCoordinator:
         self._terminal_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._admin_principal_ids = frozenset(admin_principal_ids)
         self._team_owner_resolver = team_owner_resolver or (lambda _chat_id: "")
+
+    @property
+    def employee_runtime(self) -> EmployeeRuntimeSupervisor | None:
+        return self._employee_runtime
+
+    def close(self) -> None:
+        close = getattr(self._gateway, "close", None)
+        if callable(close):
+            close()
 
     @property
     def state(self) -> GatewayProjectionState:

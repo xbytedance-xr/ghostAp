@@ -3,7 +3,15 @@
 Exports the primary runtime classes and the sandboxed runner infrastructure.
 """
 
+from .employee_actor import (
+    EmployeeActor,
+    EmployeeActorStatus,
+    EmployeeAssignment,
+    EmployeeAssignmentTerminal,
+    EmployeeCancellationOutcome,
+)
 from .employee_session import EmployeeSessionBootstrap, EmployeeSessionKey
+from .employee_supervisor import EmployeeRuntimeSupervisor
 from .runner import RunResult, SandboxRunner
 from .runtime import (
     AgentRuntime,
@@ -21,6 +29,12 @@ __all__ = [
     "ContextSnapshot",
     "EmployeeSessionBootstrap",
     "EmployeeSessionKey",
+    "EmployeeActor",
+    "EmployeeActorStatus",
+    "EmployeeAssignment",
+    "EmployeeAssignmentTerminal",
+    "EmployeeCancellationOutcome",
+    "EmployeeRuntimeSupervisor",
     "RunResult",
     "RuntimeResult",
     "SandboxRunner",
