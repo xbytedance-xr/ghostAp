@@ -490,35 +490,35 @@ class EmployeeSessionBootstrap:
     writable_roots: tuple[str, ...]
 ```
 
-- [ ] **Step 1: 写跨后端启动测试**
+- [x] **Step 1: 写跨后端启动测试**
 
   覆盖 Codex、Coco、Traex、Claude CLI 和 TTADK CLI：每种后端都获得 identity/bootstrap digest；Codex 额外获得 employee-specific `CODEX_HOME`；TTADK 不走 ACP。
 
-- [ ] **Step 2: 写路径权限测试**
+- [x] **Step 2: 写路径权限测试**
 
   project root 按员工 permission 可读写；workspace 控制文件可读不可写；`.env`、Vault、Journal、其他员工目录不可见；未声明根默认拒绝。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/contract/test_employee_backend_bootstrap.py tests/autonomous/security/test_employee_tool_isolation.py -q`
 
   Expected: FAIL because factory only captures process env and Slock uses one set of allowed roots.
 
-- [ ] **Step 4: 扩展显式 session bootstrap**
+- [x] **Step 4: 扩展显式 session bootstrap**
 
   不使用全局 `os.environ` 修改；把 `CODEX_HOME` 加入 employee process env allowlist，并在 provider spawn 时一次性捕获。所有后端首个 prompt 都包含同 digest 的 bootstrap envelope。
 
-- [ ] **Step 5: 将工具过滤改为读写根分离**
+- [x] **Step 5: 将工具过滤改为读写根分离**
 
   文件读取允许 project + workspace；文件写入和 shell cwd 只允许 policy 指定的 project/work scratch；拒绝修改 generated control files。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/contract/test_employee_backend_bootstrap.py tests/autonomous/security/test_employee_tool_isolation.py tests/test_slock_security.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
   Commit: `feat(runtime): bootstrap employee identity across backends`
 

@@ -18,6 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
 from numbers import Real
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..agent_session import close_session_safely, create_engine_session
@@ -3103,6 +3104,17 @@ class SlockEngine(BaseEngine):
         try:
             execution_errors.pop(agent.agent_id, None)
             thread_id = f"slock_agent_{agent.agent_id}"
+            if agent.security_profile == "employee_v1":
+                from src.autonomous.runtime.employee_session import (
+                    EmployeeSessionBootstrap,
+                )
+
+                bootstrap = EmployeeSessionBootstrap.from_agent(
+                    tenant_key=getattr(agent, "tenant_key", "") or "employee",
+                    agent=agent,
+                    project_root=self.root_path,
+                )
+                prompt = bootstrap.wrap_prompt(prompt)
             # NOTE: agent.permissions defines the least-privilege tool set for
             # this role (e.g. ["file_read"] for planner). Tool authorization should
             # be handled by the session layer once allowed_tools filtering is
@@ -3154,9 +3166,18 @@ class SlockEngine(BaseEngine):
 
         settings = getattr(self, "_settings", get_settings())
         configured_roots = list(getattr(settings, "slock_tool_path_restrictions", []) or [])
-        allowed_roots = [os.path.realpath(path) for path in configured_roots if path]
-        if not allowed_roots and agent.workspace_path:
-            allowed_roots = [os.path.realpath(agent.workspace_path)]
+        configured_roots = [os.path.realpath(path) for path in configured_roots if path]
+        raw_project_root = str(getattr(self, "root_path", "") or "")
+        project_root = os.path.realpath(raw_project_root) if raw_project_root else ""
+        workspace_root = os.path.realpath(agent.workspace_path) if agent.workspace_path else ""
+        read_roots = tuple(
+            dict.fromkeys(
+                root for root in (*configured_roots, project_root, workspace_root) if root
+            )
+        )
+        write_roots = tuple(
+            dict.fromkeys(root for root in (*configured_roots, project_root) if root)
+        )
 
         dangerous = getattr(self, "_dangerous_shell_patterns", None)
         if dangerous is None:
@@ -3168,18 +3189,28 @@ class SlockEngine(BaseEngine):
         permissions = set(agent.permissions or [])
         capabilities = set(agent.capabilities or [])
         employee_policy = agent.security_profile == "employee_v1"
+        effective_write_roots = write_roots if employee_policy else read_roots
 
-        def under_allowed_root(path: str) -> bool:
-            if not allowed_roots:
-                return True
+        def under_roots(path: str, roots: tuple[str, ...]) -> bool:
+            if not roots:
+                return False
             candidate = os.path.realpath(path)
-            return any(candidate == root or candidate.startswith(root + os.sep) for root in allowed_roots)
+            return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
+
+        def is_sensitive_path(path: str) -> bool:
+            candidate = os.path.realpath(path)
+            parts = set(Path(candidate).parts)
+            return (
+                ".env" in parts
+                or "vault" in {part.casefold() for part in parts}
+                or "journal" in {part.casefold() for part in parts}
+            )
 
         def path_from_tool_args(args: dict) -> str:
             path = str(args.get("path") or args.get("file_path") or "")
             if not path:
                 return ""
-            cwd = str(args.get("cwd") or agent.workspace_path or self.root_path or "")
+            cwd = str(args.get("cwd") or raw_project_root or agent.workspace_path or "")
             return path if os.path.isabs(path) else os.path.join(cwd, path)
 
         def shell_path_tokens(command: str, cwd: str) -> list[str]:
@@ -3329,9 +3360,13 @@ class SlockEngine(BaseEngine):
                     return False
                 if dangerous.search(command):
                     return False
-                cwd = os.path.realpath(str(args.get("cwd") or agent.workspace_path or self.root_path or ""))
+                cwd = os.path.realpath(
+                    str(args.get("cwd") or raw_project_root or agent.workspace_path or "")
+                )
+                if not under_roots(cwd, effective_write_roots):
+                    return False
                 for path in shell_path_tokens(command, cwd):
-                    if not under_allowed_root(path):
+                    if is_sensitive_path(path) or not under_roots(path, effective_write_roots):
                         return False
                 return True
 
@@ -3347,7 +3382,10 @@ class SlockEngine(BaseEngine):
                 ):
                     return False
                 path = path_from_tool_args(args)
-                return bool(path) and under_allowed_root(path)
+                if not path or is_sensitive_path(path):
+                    return False
+                roots = effective_write_roots if normalized_tool.startswith("file_write") else read_roots
+                return under_roots(path, roots)
             if normalized_tool == "git" and employee_policy:
                 if set(args) != {"command", "cwd"}:
                     return False
@@ -3360,9 +3398,9 @@ class SlockEngine(BaseEngine):
                 if not git_authorized(command):
                     return False
                 cwd = os.path.realpath(
-                    str(args.get("cwd") or agent.workspace_path or self.root_path or "")
+                    str(args.get("cwd") or raw_project_root or agent.workspace_path or "")
                 )
-                return bool(cwd) and under_allowed_root(cwd)
+                return bool(cwd) and under_roots(cwd, effective_write_roots)
             if employee_policy:
                 return False
             return True

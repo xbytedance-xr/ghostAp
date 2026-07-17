@@ -93,6 +93,7 @@ def build_employee_process_env(
     *,
     employee_home: str,
     credential_env: Mapping[str, str] | None = None,
+    codex_home: str = "",
 ) -> dict[str, str]:
     """Build one process env without inheriting shared application secrets."""
 
@@ -104,6 +105,10 @@ def build_employee_process_env(
         if key in _RUNTIME_KEYS and isinstance(value, str) and value
     }
     result["HOME"] = employee_home
+    if codex_home:
+        if not isinstance(codex_home, str) or not codex_home.startswith("/"):
+            raise ValueError("codex_home must be an absolute path")
+        result["CODEX_HOME"] = codex_home
     for key, value in dict(credential_env or {}).items():
         if key not in _PROVIDER_KEYS:
             raise ValueError("employee credential env key is not allowed")

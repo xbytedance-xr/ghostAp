@@ -1285,6 +1285,10 @@ def test_employee_env_reaches_real_acp_spawn_boundary_and_child(
     from src.slock_engine.models import AgentIdentity
 
     observed = {}
+    (tmp_path / "AGENTS.md").write_text(
+        "# Employee\n\nUse the explicit runtime environment.\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("LARK_APP_SECRET", "manager-secret-must-not-merge")
     monkeypatch.setenv("OPENAI_API_KEY", "manager-provider-key")
     monkeypatch.setattr(

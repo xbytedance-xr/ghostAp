@@ -333,6 +333,11 @@ class EmployeeDispatchCoordinator:
             material.runtime_env,
             employee_home=employee_home,
             credential_env=material.credential_env,
+            codex_home=(
+                str(Path(agent.workspace_path).parent / "runtime" / "codex-home")
+                if agent.agent_type == "codex"
+                else ""
+            ),
         )
         captured_head = self._presynchronize_domains()
         if team_instruction and not self._team_assignment_effect_is_active(part):
