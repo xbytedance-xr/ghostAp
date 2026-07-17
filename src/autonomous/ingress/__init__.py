@@ -24,11 +24,15 @@ from src.autonomous.ingress.models import (
 )
 from src.autonomous.ingress.router import (
     DurableEmployeeIngressRouter,
+    GroupRouteKind,
+    GroupRouteRequest,
+    RouteDecision,
     RouterAuthoritySnapshot,
     RouterDispatchGrant,
     RouterLifecycleRecord,
     RouterProjectionState,
     RouterQueueLimits,
+    decide_group_route,
 )
 from src.autonomous.ingress.sdk_capability import (
     CAPABILITY_NODEIDS,
@@ -57,6 +61,8 @@ __all__ = [
     "EmployeeIngressMetadata",
     "EmployeeIngressPayload",
     "ImplementationEvidenceResult",
+    "GroupRouteKind",
+    "GroupRouteRequest",
     "IngressAcceptance",
     "IngressDisposition",
     "LarkEmployeeAttachmentDownloader",
@@ -67,7 +73,9 @@ __all__ = [
     "RouterLifecycleRecord",
     "RouterProjectionState",
     "RouterQueueLimits",
+    "RouteDecision",
     "SDKDistributionIdentity",
     "collect_sdk_distribution_identity",
+    "decide_group_route",
     "prepare_controlled_sdk_import_cache",
 ]

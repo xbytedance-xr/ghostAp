@@ -180,6 +180,17 @@ class TeamBackend(Protocol):
         idempotency_key: str = "",
     ) -> None: ...
 
+    def submit_direct(
+        self,
+        *,
+        target: TeamTarget,
+        tenant_key: str,
+        chat_id: str,
+        message_id: str,
+        requester_principal_id: str,
+        instruction: str,
+    ) -> str: ...
+
 
 class EmployeeTeamService:
     """Coordinate a bounded analyst -> reviewer -> synthesizer team run."""
@@ -318,6 +329,35 @@ class EmployeeTeamService:
                     continue
                 state = _reduce_team_run_event(state, event)
         return state
+
+    def dispatch_direct(
+        self,
+        *,
+        target: TeamTarget,
+        tenant_key: str,
+        chat_id: str,
+        message_id: str,
+        requester_principal_id: str,
+        instruction: str,
+    ) -> str:
+        """Admit one explicit @ directly to exactly one employee Inbox."""
+
+        submit = getattr(self._backend, "submit_direct", None)
+        if not callable(submit):
+            raise TeamServiceError("direct employee dispatch is unavailable")
+        return submit(
+            target=target,
+            tenant_key=tenant_key,
+            chat_id=chat_id,
+            message_id=message_id,
+            requester_principal_id=requester_principal_id,
+            instruction=instruction,
+        )
+
+    def record_collaboration_event(self, **coordinates: str) -> bool:
+        if self._coordinator is None:
+            return False
+        return self._coordinator.record_collaboration_event(**coordinates)
 
     def recover(self) -> int:
         """Terminalize runs whose in-memory instruction was lost on restart."""

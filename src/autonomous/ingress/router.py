@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, Callable, Mapping, Protocol
 
 from ..context.models import AuthorizedContextRequest
@@ -41,6 +42,81 @@ _ROUTER_EVENTS = frozenset(
         _ROUTER_PREFIX + "terminal",
     }
 )
+
+
+class GroupRouteKind(StrEnum):
+    DIRECT_EMPLOYEE = "direct_employee"
+    TEAM_TASK = "team_task"
+    COLLABORATION_EVENT = "collaboration_event"
+    AMBIENT_CHAT = "ambient_chat"
+
+
+@dataclass(frozen=True, slots=True)
+class GroupRouteRequest:
+    tenant_key: str
+    chat_id: str
+    sender_principal_id: str
+    sender_type: str
+    sender_tenant_key: str
+    text: str
+    mentioned_agent_ids: tuple[str, ...] = ()
+    explicit_team_task: bool = False
+    team_run_id: str = ""
+    assignment_id: str = ""
+    causal_event_id: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mentioned_agent_ids", tuple(self.mentioned_agent_ids))
+        if not all((self.tenant_key, self.chat_id, self.sender_principal_id)):
+            raise ValueError("group route authority is required")
+        if self.sender_tenant_key != self.tenant_key:
+            raise ValueError("cross-tenant group route denied")
+        if len(set(self.mentioned_agent_ids)) != len(self.mentioned_agent_ids):
+            raise ValueError("duplicate employee mention")
+
+
+@dataclass(frozen=True, slots=True)
+class RouteDecision:
+    kind: GroupRouteKind
+    target_agent_id: str = ""
+    team_run_id: str = ""
+    assignment_id: str = ""
+    causal_event_id: str = ""
+    wake_model: bool = False
+
+
+def decide_group_route(request: GroupRouteRequest) -> RouteDecision:
+    """Apply the fail-closed group wake priority without any model call."""
+
+    if not isinstance(request, GroupRouteRequest):
+        raise TypeError("request must be GroupRouteRequest")
+    collaboration_fields = (
+        request.team_run_id,
+        request.assignment_id,
+        request.causal_event_id,
+    )
+    if request.sender_type == "bot":
+        if all(collaboration_fields) and not request.mentioned_agent_ids:
+            return RouteDecision(
+                GroupRouteKind.COLLABORATION_EVENT,
+                team_run_id=request.team_run_id,
+                assignment_id=request.assignment_id,
+                causal_event_id=request.causal_event_id,
+                wake_model=False,
+            )
+        # Bot text can never create fresh work, even if it contains task words.
+        return RouteDecision(GroupRouteKind.AMBIENT_CHAT)
+    if any(collaboration_fields):
+        raise ValueError("user cannot forge collaboration coordinates")
+    if len(request.mentioned_agent_ids) == 1:
+        return RouteDecision(
+            GroupRouteKind.DIRECT_EMPLOYEE,
+            target_agent_id=request.mentioned_agent_ids[0],
+            wake_model=True,
+        )
+    if len(request.mentioned_agent_ids) > 1 or request.explicit_team_task:
+        return RouteDecision(GroupRouteKind.TEAM_TASK, wake_model=True)
+    return RouteDecision(GroupRouteKind.AMBIENT_CHAT)
 
 
 def _canonical_utc(value: datetime) -> str:

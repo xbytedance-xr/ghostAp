@@ -284,6 +284,54 @@ class TeamCoordinatorActor:
             )
             return True
 
+    def record_collaboration_event(
+        self,
+        *,
+        tenant_key: str,
+        chat_id: str,
+        agent_id: str,
+        team_run_id: str,
+        assignment_id: str,
+        causal_event_id: str,
+    ) -> bool:
+        """Accept only a unique member contribution for one live assignment."""
+
+        with self._lock:
+            projection = self.projection()
+            run = projection.runs.get(team_run_id)
+            assignment = projection.assignments.get(assignment_id)
+            if (
+                run is None
+                or run.tenant_key != tenant_key
+                or run.chat_id != chat_id
+                or run.phase
+                in {
+                    TeamRunPhase.COMPLETED,
+                    TeamRunPhase.BLOCKED,
+                    TeamRunPhase.CANCELED,
+                }
+                or run.handoff_count >= 8
+                or assignment is None
+                or assignment.run_id != team_run_id
+                or assignment.agent_id != agent_id
+                or assignment.status is not TeamAssignmentStatus.COMPLETED
+                or causal_event_id in projection.collaboration_events
+            ):
+                return False
+            self._commit(
+                JournalEvent(
+                    event_type="team.v2.collaboration.observed",
+                    aggregate_id=team_run_id,
+                    payload={
+                        "run_id": team_run_id,
+                        "assignment_id": assignment_id,
+                        "agent_id": agent_id,
+                        "causal_event_id": causal_event_id,
+                    },
+                )
+            )
+            return True
+
     def _schedule(self, run_id: str) -> None:
         with self._lock:
             if self._closed or run_id in self._active:
@@ -675,12 +723,23 @@ class TeamCoordinatorActor:
             haystack = capabilities | set(str(getattr(item, "role", "")).casefold().split())
             if not any(value.strip() for value in haystack):
                 continue
-            role_match = role == "review" and any("review" in value for value in haystack)
+            role_match = (
+                role == "review"
+                and any("review" in value for value in haystack)
+            ) or (
+                role == "execute"
+                and any(
+                    marker in value
+                    for value in haystack
+                    for marker in ("coder", "developer", "implementation")
+                )
+            )
             task_match = any(word in " ".join(haystack) for word in task_words if len(word) > 2)
             eligible.append(
                 (
                     0 if item.agent_id in explicit else 1,
-                    0 if role_match or task_match else 1,
+                    0 if role_match else 1,
+                    0 if task_match else 1,
                     int(getattr(item, "mailbox_load", 0)),
                     item.agent_id,
                     item,

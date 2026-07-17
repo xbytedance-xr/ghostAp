@@ -269,6 +269,14 @@ class MessageDispatcher:
             if _is_managed and not _is_global_command:
                 # Passive mode: managed chat alone is sufficient for routing
                 # BUT skip if this is a valid global command
+                from src.slock_engine.task_classifier import TaskClassifier
+
+                is_ambient, ambient_confidence = TaskClassifier.classify(
+                    text or "", managed_chat=True
+                )
+                if is_ambient and ambient_confidence >= 0.7:
+                    # The durable group ledger above remains the only effect.
+                    return
                 self.client._add_reaction(message_id, EmojiReaction.on_processing())
                 self.client._handle_slock_message(message_id, chat_id, text, project)
                 return
@@ -354,6 +362,13 @@ class MessageDispatcher:
         elif slock_context_allowed and not _is_smart_shell:
             # Legacy mode: require both active AND managed
             if self.client._is_slock_active(chat_id) and _is_managed:
+                from src.slock_engine.task_classifier import TaskClassifier
+
+                is_ambient, ambient_confidence = TaskClassifier.classify(
+                    text or "", managed_chat=True
+                )
+                if is_ambient and ambient_confidence >= 0.7:
+                    return
                 self.client._add_reaction(message_id, EmojiReaction.on_processing())
                 self.client._handle_slock_message(message_id, chat_id, text, project)
                 return

@@ -778,39 +778,39 @@ class EmployeeKnowledgeService:
 - `RouteDecision` 精确区分 `direct_employee`、`team_task`、`collaboration_event`、`ambient_chat`。
 - `collaboration_event` 带 `team_run_id/assignment_id/causal_event_id`，只能推进现有 run。
 
-- [ ] **Step 1: 写路由优先级测试**
+- [x] **Step 1: 写路由优先级测试**
 
   直接 @ 某员工只进入该员工邮箱；显式 Team task 进入 Coordinator；普通聊天只入 ledger；Bot contribution 不被重新识别为新 Team task。
 
-- [ ] **Step 2: 写选择性唤醒测试**
+- [x] **Step 2: 写选择性唤醒测试**
 
   群消息对所有合资格员工可见于 durable ledger，但没有 mention/assignment/claim 时模型调用数为 0；被分配员工调用数为 1。
 
-- [ ] **Step 3: 写协作回合测试**
+- [x] **Step 3: 写协作回合测试**
 
   员工 A contribution 可成为员工 B review context；A/B 的可见消息使用各自 employee Bot 发送；最终结论由 coordinator/main Bot 发送。
 
-- [ ] **Step 4: 写 loop guard 测试**
+- [x] **Step 4: 写 loop guard 测试**
 
   重复 causal ID、超过 handoff、过期 run、非成员 Bot、跨 tenant event 和任意伪造 assignment ID 均拒绝。
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
   Run: `uv run python -m pytest tests/autonomous/integration/test_employee_group_collaboration.py tests/autonomous/integration/test_employee_direct_mention_actor.py tests/autonomous/security/test_employee_bot_loop_guard.py -q`
 
   Expected: FAIL before routing/actor integration.
 
-- [ ] **Step 6: 接入生产路由和 Outbox**
+- [x] **Step 6: 接入生产路由和 Outbox**
 
   保持主 Bot/员工 Bot 零代发边界；每条员工贡献由该员工 app/generation 发送，Coordinator 最终结果走主 Bot transport。
 
-- [ ] **Step 7: 验证**
+- [x] **Step 7: 验证**
 
   Run: `uv run python -m pytest tests/autonomous/integration/test_employee_group_collaboration.py tests/autonomous/integration/test_employee_direct_mention_actor.py tests/autonomous/security/test_employee_bot_loop_guard.py tests/test_feishu_dispatcher.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
   Commit: `feat(team): route selective employee collaboration`
 

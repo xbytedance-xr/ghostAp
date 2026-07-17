@@ -155,6 +155,31 @@ class EmployeeMembershipService:
             raise MembershipBindingError("employee name is ambiguous")
         return matches[0] if matches else None
 
+    def resolve_member_bot(
+        self,
+        tenant_key: str,
+        chat_id: str,
+        bot_principal_id: str,
+    ) -> Any | None:
+        """Bind a collaboration event to one active employee Bot membership."""
+
+        if not all((tenant_key, chat_id, bot_principal_id)):
+            return None
+        matches = [
+            employee
+            for employee in self.list_employees(tenant_key)
+            if employee.bot_principal_id == bot_principal_id
+            and chat_id in employee.member_groups
+        ]
+        if len(matches) != 1:
+            return None
+        employee = matches[0]
+        return (
+            None
+            if self.is_degraded(employee.agent_id, chat_id)
+            else employee
+        )
+
     def list_employees(self, tenant_key: str) -> list[Any]:
         projection = self._hire.synchronize_projection()
         return [

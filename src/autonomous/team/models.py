@@ -152,11 +152,17 @@ class TeamProjection:
     runs: Mapping[str, TeamRunV2] = field(default_factory=dict)
     assignments: Mapping[str, TeamAssignmentV2] = field(default_factory=dict)
     effects: Mapping[tuple[str, str], str] = field(default_factory=dict)
+    collaboration_events: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "runs", MappingProxyType(dict(self.runs)))
         object.__setattr__(self, "assignments", MappingProxyType(dict(self.assignments)))
         object.__setattr__(self, "effects", MappingProxyType(dict(self.effects)))
+        object.__setattr__(
+            self,
+            "collaboration_events",
+            MappingProxyType(dict(self.collaboration_events)),
+        )
 
 
 __all__ = [

@@ -376,6 +376,96 @@ class _RuntimeTeamBackend:
             retry_allowed=True,
         )
 
+    def submit_direct(
+        self,
+        *,
+        target: TeamTarget,
+        tenant_key: str,
+        chat_id: str,
+        message_id: str,
+        requester_principal_id: str,
+        instruction: str,
+    ) -> str:
+        runtime = self._runtime
+        service = runtime._require_service()
+        ingress = runtime._ingress
+        channels = runtime._channels
+        if ingress is None or channels is None:
+            raise RuntimeError("direct employee ingress is unavailable")
+        state = next(
+            (
+                candidate
+                for candidate in service.list_states()
+                if candidate.agent_id == target.agent_id
+                and candidate.tenant_key == tenant_key
+                and candidate.phase is HirePhase.ACTIVE
+            ),
+            None,
+        )
+        status = channels.status(target.agent_id)
+        ready_metadata = getattr(status, "ready_metadata", None)
+        connection_id = (
+            ready_metadata.get("connection_id")
+            if isinstance(ready_metadata, Mapping)
+            else ""
+        )
+        if (
+            state is None
+            or getattr(status, "state", None) is not ChannelProcessState.READY
+            or getattr(status, "generation", None) != state.channel_generation
+            or not isinstance(connection_id, str)
+            or not connection_id
+        ):
+            raise RuntimeError("direct employee channel authority is unavailable")
+        stable = hashlib.sha256(
+            f"direct\0{tenant_key}\0{chat_id}\0{message_id}\0{target.agent_id}".encode()
+        ).hexdigest()
+        payload = EmployeeIngressPayload(
+            schema_version=1,
+            envelope_id=f"ing_{stable}",
+            normalized_parts=(
+                {
+                    "type": "message",
+                    "message_type": "text",
+                    "chat_type": "group",
+                    "content": {"text": instruction},
+                    "sender_id": requester_principal_id,
+                    "sender_id_type": "open_id",
+                    "sender_type": "user",
+                    "sender_tenant_key": tenant_key,
+                    "feishu_thread_id": "",
+                },
+            ),
+            attachment_descriptors=(),
+        )
+        metadata = EmployeeIngressMetadata(
+            schema_version=1,
+            envelope_id=payload.envelope_id,
+            tenant_key=tenant_key,
+            agent_id=state.agent_id,
+            bot_principal_id=state.bot_principal_id,
+            app_id=state.app_id,
+            channel_generation=state.channel_generation,
+            connection_id=connection_id,
+            event_id=f"evt_{stable}",
+            message_id=message_id,
+            event_type="im.message.receive_v1",
+            action_identity=f"direct:{stable}",
+            chat_id=chat_id,
+            thread_root_message_id=message_id,
+            sender_principal_id=requester_principal_id,
+            received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            ),
+            semantic_digest=payload.payload_sha256,
+            payload_sha256=payload.payload_sha256,
+            payload_size_bytes=payload.canonical_size_bytes,
+            attachment_count=0,
+            attachment_total_bytes=0,
+        )
+        ack = ingress.accept(metadata, payload, request_id=f"req_{stable}")
+        return ack.acceptance.acceptance_id
+
     def cancel(
         self,
         acceptance_id: str,

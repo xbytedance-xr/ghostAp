@@ -12,7 +12,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models
-from ...autonomous.team import TeamAdmissionError
+from ...autonomous.team import TeamAdmissionError, TeamTarget
 from ...card import CardBuilder
 from ...card.actions import dispatch as action_ids
 from ...card.shared import build_responsive_layout
@@ -419,6 +419,50 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         at_match = re.search(r"@([\w\-]+)", text or "")
         target_agent = None
 
+        if at_match:
+            membership = getattr(self.ctx, "employee_membership_service", None)
+            team_service = getattr(self.ctx, "employee_team_service", None)
+            if membership is not None and team_service is not None:
+                from ...thread.manager import (
+                    get_current_sender_id,
+                    get_current_tenant_key,
+                )
+
+                tenant_key = get_current_tenant_key() or ""
+                requester = get_current_sender_id() or ""
+                employee = membership.find_employee_by_name(
+                    tenant_key, at_match.group(1)
+                )
+                if (
+                    employee is not None
+                    and chat_id in employee.member_groups
+                    and not membership.is_degraded(employee.agent_id, chat_id)
+                    and requester
+                ):
+                    try:
+                        team_service.dispatch_direct(
+                            target=TeamTarget(
+                                employee.agent_id,
+                                employee.name,
+                                employee.role,
+                                tuple(employee.capabilities),
+                            ),
+                            tenant_key=tenant_key,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            requester_principal_id=requester,
+                            instruction=text.strip(),
+                        )
+                    except Exception:
+                        logger.exception("Visible employee direct dispatch failed")
+                        self.reply_text(message_id, "⚠️ 该员工当前无法安全受理任务，请稍后重试。")
+                    else:
+                        self.reply_text(
+                            message_id,
+                            f"📨 已直接交给 {employee.name}；其他员工不会被唤醒。",
+                        )
+                    return
+
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
 
@@ -437,6 +481,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         from src.slock_engine.task_classifier import TaskClassifier
 
         is_chitchat, confidence = TaskClassifier.classify(text or "")
+        if is_chitchat and confidence >= 0.7:
+            # The main ingress has already placed this message in the durable
+            # group ledger. Ambient chat is context, not a model wake signal.
+            return
 
         intent_result = None
         coro = None

@@ -66,17 +66,19 @@ def rebuild_team_projection(frames: Iterable[object]) -> TeamProjection:
     runs: dict[str, TeamRunV2] = {}
     assignments: dict[str, TeamAssignmentV2] = {}
     effects: dict[tuple[str, str], str] = {}
+    collaboration_events: dict[str, str] = {}
     for frame in frames:
         for event in frame.events:
             if event.event_type.startswith("team.v2."):
-                _apply_event(runs, assignments, effects, event)
-    return TeamProjection(runs, assignments, effects)
+                _apply_event(runs, assignments, effects, collaboration_events, event)
+    return TeamProjection(runs, assignments, effects, collaboration_events)
 
 
 def _apply_event(
     runs: dict[str, TeamRunV2],
     assignments: dict[str, TeamAssignmentV2],
     effects: dict[tuple[str, str], str],
+    collaboration_events: dict[str, str],
     event: JournalEvent,
 ) -> None:
     payload = event.payload
@@ -144,6 +146,27 @@ def _apply_event(
             phase=TeamRunPhase.COMPLETED,
             final_result_ref=BlobRef.from_dict(payload["result_ref"]),
         )
+        return
+    if event.event_type == "team.v2.collaboration.observed":
+        assignment_id = str(payload["assignment_id"])
+        causal_event_id = str(payload["causal_event_id"])
+        assignment = assignments.get(assignment_id)
+        if (
+            assignment is None
+            or assignment.run_id != run_id
+            or assignment.agent_id != str(payload["agent_id"])
+            or assignment.status is not TeamAssignmentStatus.COMPLETED
+        ):
+            raise TeamProjectionError("invalid collaboration assignment authority")
+        if run.phase in {
+            TeamRunPhase.COMPLETED,
+            TeamRunPhase.BLOCKED,
+            TeamRunPhase.CANCELED,
+        }:
+            raise TeamProjectionError("collaboration run is terminal")
+        if not causal_event_id or causal_event_id in collaboration_events:
+            raise TeamProjectionError("duplicate collaboration causal event")
+        collaboration_events[causal_event_id] = assignment_id
         return
     if event.event_type == "team.v2.assignment.created":
         assignment_id = event.aggregate_id
