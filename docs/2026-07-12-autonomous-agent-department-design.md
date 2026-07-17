@@ -37,6 +37,13 @@
 
 以 v5 Journal 记录员工、Bot principal、Saga、membership、Inbox、Outbox 和外部 Effect；`AgentRegistry` 与文件布局作为 Projection。独立员工 transport 通过类型化 gateway 调用 Slock，最终复用原 `_run_acp_session`。
 
+> **实现状态（2026-07-17）**：上述 Slock 调用是已经落地的 v1 过渡方案，
+> 并不等价于“常驻员工模型进程”。它仍会为每次 prompt 创建并关闭后端 session，
+> Team 也仍是固定 analysis/review/synthesis 流水线。长期逻辑 Actor、durable
+> assignment/checkpoint、可复用后端 session 和知识工作区的目标语义与迁移步骤，
+> 以 [Persistent Employee Runtime and Knowledge Workspace Implementation Plan](./2026-07-17-persistent-employee-runtime-and-knowledge-workspace-plan.md)
+> 为准。
+
 优点：满足耐久性、安全和审计要求；保留成熟 ACP 路径；可逐步迁移旧数据；不会触碰独立引擎。  
 缺点：初期需要补齐 production composition、Projection 和迁移门禁。
 

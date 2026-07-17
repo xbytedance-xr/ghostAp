@@ -334,25 +334,25 @@ class CoordinatorDecision:
 - 复现 `ORDERING -> defer -> context_unavailable -> team.run.action_required`。
 - 冻结未来替代合同：Team assignment 拥有 durable payload、可恢复 checkpoint 和具体 context quality。
 
-- [ ] **Step 1: 写当前实现证据测试**
+- [x] **Step 1: 写当前实现证据测试**
 
   证明连续两个员工任务会创建并关闭两个 session；Team 目标按 `agent_id` 排序且固定三段执行；restart 只能产生 `restart_instruction_unavailable`。
 
-- [ ] **Step 2: 写 ordering 故障回归测试**
+- [x] **Step 2: 写 ordering 故障回归测试**
 
   构造缺失/逆序 `message_position` 的 Lark page，证明内部 Team assignment 在当前实现中不会到达 ACP backend。
 
-- [ ] **Step 3: 运行测试并保存失败/通过基线**
+- [x] **Step 3: 运行测试并保存失败/通过基线**
 
   Run: `uv run python -m pytest tests/autonomous/contract/test_persistent_employee_runtime_contract.py tests/autonomous/integration/test_team_context_ordering_recovery.py tests/autonomous/unit/test_employee_team_service.py -q`
 
   Expected: 旧行为证据通过；面向新合同的测试以缺少 runtime/ledger 类型失败。
 
-- [ ] **Step 4: 更新旧设计文档状态**
+- [x] **Step 4: 更新旧设计文档状态**
 
   在旧部门设计中明确“Slock 单次 ACP”是已实现的 v1 过渡方案，并链接本文，避免后续维护者误把它当成最终常驻员工语义。
 
-- [ ] **Step 5: 提交基线合同**
+- [x] **Step 5: 提交基线合同**
 
   Commit: `test(autonomous): freeze employee runtime v1 gaps`
 

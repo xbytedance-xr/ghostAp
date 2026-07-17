@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-17
+- **常驻员工v1缺口契约** - 单次Session、固定Team流水线与Ordering故障证据 → [2026-07-17.md](2026-07-17.md)
 - **常驻员工与知识工作目录方案** - Actor会话、LLM Wiki、群事件账本与动态Team协调的12阶段计划 → [2026-07-17.md](2026-07-17.md)
 - **Shell路由与飞书热路径修复** - SMART shell绕过Slock、Contact异步负缓存与ActivationGuard类型收口 → [2026-07-17.md](2026-07-17.md)
 ## 2026-07-16

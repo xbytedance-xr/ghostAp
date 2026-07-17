@@ -312,7 +312,7 @@ def test_concurrent_same_message_creates_one_team_run(tmp_path) -> None:
     writer.close()
 
 
-def test_team_run_hands_off_reviews_and_synthesizes(tmp_path) -> None:
+def test_v1_team_run_uses_fixed_analysis_review_synthesis_pipeline(tmp_path) -> None:
     writer = make_writer(tmp_path)
     backend = _Backend()
     service = EmployeeTeamService(
@@ -378,6 +378,12 @@ def test_restart_marks_unfinished_run_action_required(tmp_path) -> None:
 
     assert service.recover() == 1
     assert service.get_run("teamrun_crashed").status == "action_required"
+    assert any(
+        event.event_type == "team.run.action_required"
+        and event.payload == {"error_code": "restart_instruction_unavailable"}
+        for frame in writer.replay()
+        for event in frame.events
+    )
     writer.close()
 
 
