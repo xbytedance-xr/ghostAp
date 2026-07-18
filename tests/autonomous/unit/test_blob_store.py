@@ -48,6 +48,22 @@ def blob_path(root: Path, ref: BlobRef) -> Path:
     return root / f"{ref.blob_hash}.blob"
 
 
+def test_restore_quarantined_blob_preserves_authenticated_content(tmp_path: Path) -> None:
+    root = tmp_path / "blobs"
+    store = make_store(root)
+    ref = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+    quarantined = store.quarantine_blob(ref.blob_id)
+
+    with pytest.raises(BlobMissingError):
+        store.read(ref)
+
+    restored = store.restore_quarantined_blob(ref.blob_id)
+
+    assert restored == blob_path(root, ref)
+    assert not quarantined.exists()
+    assert store.read(ref) == PAYLOAD
+
+
 def test_new_store_fsyncs_parent_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

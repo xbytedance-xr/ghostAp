@@ -351,6 +351,26 @@ def test_orphan_quarantine_ignores_live_acceptance_and_collects_unanchored_blob(
     writer.close()
 
 
+def test_explicitly_retained_shared_blob_survives_ingress_rebuild(
+    tmp_path: Path,
+) -> None:
+    service, writer, store = _service(tmp_path)
+    shared = store.stage_and_publish(
+        b"shared group context",
+        {"kind": "group_event", "tenant_key": "tenant_1"},
+        "k1",
+    )
+    store.quarantine_blob(shared.blob_id)
+
+    service.retain_shared_blob(shared.blob_id)
+    service.rebuild_projection()
+
+    assert store.read(shared) == b"shared group context"
+    assert service.quarantine_unreferenced_blobs() == 0
+    service.close()
+    writer.close()
+
+
 def test_restart_quarantines_blob_left_by_crash_before_journal_commit(
     tmp_path: Path,
 ) -> None:

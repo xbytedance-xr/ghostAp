@@ -90,6 +90,8 @@ class EmployeeIngressService:
         self._state = ingress_state
         self._active_key_id = active_key_id
         self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._shared_blob_mutex = threading.RLock()
+        self._retained_shared_blob_ids: set[str] = set()
         self._admission_closed = False
         self._closed = False
         self.rebuild_projection()
@@ -129,6 +131,19 @@ class EmployeeIngressService:
     @property
     def blob_store(self) -> BlobStore:
         return self._blob_store
+
+    def retain_shared_blob(self, blob_id: str) -> None:
+        """Protect and restore a Journal-anchored blob co-owned by another projection."""
+
+        with self._shared_blob_mutex:
+            self._blob_store.restore_quarantined_blob(blob_id)
+            self._retained_shared_blob_ids.add(blob_id)
+
+    def release_shared_blob(self, blob_id: str) -> None:
+        """Release a failed pre-commit shared-blob reservation."""
+
+        with self._shared_blob_mutex:
+            self._retained_shared_blob_ids.discard(blob_id)
 
     @contextmanager
     def employee_dispatch_guard(self, *, router: object | None = None) -> Iterator[None]:
@@ -588,15 +603,17 @@ class EmployeeIngressService:
                 continue
 
     def _quarantine_unreferenced_blobs_unlocked(self) -> int:
-        live_ids = {
-            record.blob_ref.blob_id
-            for record in self._state.by_acceptance_id.values()
-            if not record.payload_tombstoned
-        }
-        orphan_ids = set(self._blob_store.iter_blob_ids()) - live_ids
-        for blob_id in orphan_ids:
-            self._blob_store.quarantine_blob(blob_id)
-        return len(orphan_ids)
+        with self._shared_blob_mutex:
+            live_ids = {
+                record.blob_ref.blob_id
+                for record in self._state.by_acceptance_id.values()
+                if not record.payload_tombstoned
+            }
+            live_ids.update(self._retained_shared_blob_ids)
+            orphan_ids = set(self._blob_store.iter_blob_ids()) - live_ids
+            for blob_id in orphan_ids:
+                self._blob_store.quarantine_blob(blob_id)
+            return len(orphan_ids)
 
     def _quarantine_blob_unlocked(self, blob_ref: BlobRef) -> None:
         try:

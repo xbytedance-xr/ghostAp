@@ -632,6 +632,67 @@ class BlobStore:
             os.close(quarantine_fd)
         return self.root / "quarantine" / filename
 
+    def restore_quarantined_blob(self, blob_id: str) -> Path:
+        """Restore one authenticated owned blob from private quarantine."""
+
+        self._require_open()
+        if not _is_sha256(blob_id):
+            raise BlobIntegrityError("blob id is not sha256 hex")
+        filename = f"{blob_id}.blob"
+        try:
+            descriptor = self._open_leaf(filename)
+        except FileNotFoundError:
+            descriptor = -1
+        if descriptor >= 0:
+            os.close(descriptor)
+            return self.root / filename
+
+        quarantine_fd = self._open_child_directory("quarantine")
+        source_fd = -1
+        try:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                source_fd = os.open(filename, flags, dir_fd=quarantine_fd)
+            except FileNotFoundError as exc:
+                raise BlobMissingError("quarantined blob is missing") from exc
+            source_stat = os.fstat(source_fd)
+            if (
+                not stat.S_ISREG(source_stat.st_mode)
+                or stat.S_IMODE(source_stat.st_mode) != 0o600
+            ):
+                raise BlobIntegrityError(
+                    "quarantined blob leaf must be a regular 0600 file"
+                )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            if _sha256(b"".join(chunks)) != blob_id:
+                raise BlobIntegrityError("quarantined blob content address mismatch")
+            os.close(source_fd)
+            source_fd = -1
+            os.replace(
+                filename,
+                filename,
+                src_dir_fd=quarantine_fd,
+                dst_dir_fd=self._root_fd,
+            )
+            descriptor = self._open_leaf(filename)
+            os.close(descriptor)
+            os.fsync(quarantine_fd)
+            self._fsync_root()
+        finally:
+            if source_fd >= 0:
+                os.close(source_fd)
+            os.close(quarantine_fd)
+        return self.root / filename
+
     @staticmethod
     def _open_root(root: Path) -> int:
         parts = root.parts[1:] if root.is_absolute() else root.parts

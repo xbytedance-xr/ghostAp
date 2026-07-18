@@ -236,6 +236,101 @@ def test_production_dispatch_tick_reaps_idle_employee_sessions() -> None:
     assert calls == ["sweep_idle"]
 
 
+def test_production_dispatch_projects_group_context_before_routing_and_gc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    acceptance_id = "acc_group_message"
+    pending = SimpleNamespace(disposition=None)
+
+    class _Ingress:
+        state = SimpleNamespace(by_acceptance_id={acceptance_id: pending})
+
+        def rebuild_projection(self):
+            return None
+
+        def gc_terminal_payloads(self):
+            calls.append("gc_payload")
+            return 0
+
+    class _Router:
+        state = SimpleNamespace(by_acceptance_id={})
+
+        def rebuild_projection(self):
+            return None
+
+        def route(self, routed_acceptance_id: str):
+            assert routed_acceptance_id == acceptance_id
+            calls.append("route")
+
+    class _Dispatch:
+        employee_runtime = None
+
+        def dispatch_next(self):
+            calls.append("dispatch")
+            return None
+
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = _Ingress()  # type: ignore[assignment]  # noqa: SLF001
+    runtime._router = _Router()  # type: ignore[assignment]  # noqa: SLF001
+    runtime._dispatch = _Dispatch()  # type: ignore[assignment]  # noqa: SLF001
+    monkeypatch.setattr(
+        runtime,
+        "_record_employee_ingress_group_event",
+        lambda observed_acceptance_id: calls.append("project_group_context"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_handle_control_ingress",
+        lambda observed_acceptance_id: calls.append("handle_control") or False,
+    )
+
+    runtime._drain_employee_dispatch_once()  # noqa: SLF001
+
+    assert calls == [
+        "project_group_context",
+        "handle_control",
+        "route",
+        "dispatch",
+        "gc_payload",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_channel_acceptance_callback_does_not_repeat_group_projection_after_gc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    acceptance_id = "acc_group_message"
+
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    runtime = EmployeeDepartmentRuntime()
+    monkeypatch.setattr(
+        runtime,
+        "_record_employee_ingress_group_event",
+        lambda observed_acceptance_id: calls.append("project_group_context"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_handle_control_ingress",
+        lambda observed_acceptance_id: calls.append("handle_control") or False,
+    )
+
+    await runtime._handle_channel_event(  # noqa: SLF001
+        "intent_1",
+        1,
+        {
+            "event": "durableIngressAccepted",
+            "data": {"acceptance_id": acceptance_id},
+        },
+    )
+
+    assert calls == ["handle_control"]
+
+
 def test_enabled_runtime_fails_closed_when_group_ledger_cannot_anchor() -> None:
     from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
 

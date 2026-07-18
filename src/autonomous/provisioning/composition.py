@@ -1782,6 +1782,8 @@ class EmployeeDepartmentRuntime:
                 blob_store=self._ingress.blob_store,
                 active_key_id=self._data_keyring.active_key_id,
                 config=ThreadContextConfig(),
+                blob_retainer=self._ingress.retain_shared_blob,
+                blob_releaser=self._ingress.release_shared_blob,
             )
             self._outbox = EmployeeOutboxService.from_keyring(
                 writer=self._writer,
@@ -2321,6 +2323,10 @@ class EmployeeDepartmentRuntime:
         worked = False
         for acceptance_id, record in tuple(ingress.state.by_acceptance_id.items()):
             if record.disposition is None:
+                # The ingress payload may be reclaimed as soon as dispatch reaches a
+                # terminal disposition.  Project shared group context on this same
+                # serialized path before routing so context assembly cannot race GC.
+                self._record_employee_ingress_group_event(acceptance_id)
                 if self._handle_control_ingress(acceptance_id):
                     worked = True
                     continue
@@ -4701,10 +4707,6 @@ class EmployeeDepartmentRuntime:
             data = payload.get("data")
             acceptance_id = data.get("acceptance_id") if isinstance(data, dict) else None
             if isinstance(acceptance_id, str) and acceptance_id:
-                await asyncio.to_thread(
-                    self._record_employee_ingress_group_event,
-                    acceptance_id,
-                )
                 await asyncio.to_thread(self._handle_control_ingress, acceptance_id)
             return
         return

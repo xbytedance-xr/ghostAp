@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..journal.blob_store import BlobRef, BlobStore
@@ -104,11 +105,15 @@ class GroupContextLedger:
         blob_store: BlobStore,
         active_key_id: str,
         config: ThreadContextConfig | None = None,
+        blob_retainer: Callable[[str], None] | None = None,
+        blob_releaser: Callable[[str], None] | None = None,
     ) -> None:
         self._writer = writer
         self._blobs = blob_store
         self._key = active_key_id
         self._config = config or ThreadContextConfig()
+        self._blob_retainer = blob_retainer
+        self._blob_releaser = blob_releaser
         self._lock = threading.RLock()
         self._records: dict[str, GroupEventRecord] = {}
         self.rebuild_projection()
@@ -171,6 +176,8 @@ class GroupContextLedger:
                 },
                 self._key,
             )
+            if self._blob_retainer is not None:
+                self._blob_retainer(ref.blob_id)
             event = JournalEvent(
                 event_type="group.event.recorded",
                 aggregate_id=aggregate,
@@ -187,13 +194,20 @@ class GroupContextLedger:
                 },
             )
             last = self._writer.get_last_frame()
-            result = self._writer.commit(
-                (event,),
-                self._writer.get_aggregate_versions((aggregate,)),
-                expected_head_sequence=0 if last is None else last.sequence,
-                expected_head_hash="" if last is None else last.frame_hash,
-            )
+            try:
+                result = self._writer.commit(
+                    (event,),
+                    self._writer.get_aggregate_versions((aggregate,)),
+                    expected_head_sequence=0 if last is None else last.sequence,
+                    expected_head_hash="" if last is None else last.frame_hash,
+                )
+            except BaseException:
+                if self._blob_releaser is not None:
+                    self._blob_releaser(ref.blob_id)
+                raise
             if result.state is not CommitState.ANCHORED:
+                if self._blob_releaser is not None:
+                    self._blob_releaser(ref.blob_id)
                 raise GroupLedgerError("group event was not anchored")
             record = self._record_from_event(event, result.frame.sequence)
             self._records[dedup_key] = record
@@ -218,6 +232,9 @@ class GroupContextLedger:
         if last_hash != anchored.frame_hash:
             raise GroupLedgerError("group ledger anchor mismatch")
         self._records = records
+        if self._blob_retainer is not None:
+            for record in records.values():
+                self._blob_retainer(record.payload_ref.blob_id)
         return len(records)
 
     def window(
