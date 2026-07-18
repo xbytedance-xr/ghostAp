@@ -180,6 +180,7 @@ def _reopen_recovery_harness(tmp_path, prior):
             return self.projection_state
 
     coordinator_kwargs = dict(
+        employee_runtime_mode="legacy_one_shot",
         writer=writer,
         hire_service=_Hire(),
         ingress_service=ingress,

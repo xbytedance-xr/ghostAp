@@ -380,7 +380,7 @@ class EmployeeKnowledgeService:
             for item in state.employee_documents.values()
             if item.tenant_key == source.tenant_key
             and item.agent_id == source.agent_id
-            and item.kind is DataKind.KNOWLEDGE_PAGE
+            and item.kind in {DataKind.KNOWLEDGE_PAGE, DataKind.KNOWLEDGE_INDEX}
         ]
         generation = max(generations, default=0) + 1
         updated_at = datetime.now(UTC).isoformat()

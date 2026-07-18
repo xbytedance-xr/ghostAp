@@ -9,6 +9,7 @@ from src.autonomous.knowledge import (
     KnowledgePageDraft,
     KnowledgeSource,
 )
+from src.autonomous.knowledge.query import parse_knowledge_page
 from tests.autonomous.knowledge_helpers import (
     build_knowledge_composition,
     close_knowledge_composition,
@@ -41,19 +42,30 @@ def test_same_source_hash_is_idempotent_and_changed_source_advances_generation(
     second = seed_terminal(composition, "two", "Use a checkpoint before retrying.")
     service.enqueue_terminal(second)
     service.drain()
-    assert compiler.calls == 2
+    third = seed_terminal(composition, "three", "Record the source before publishing.")
+    service.enqueue_terminal(third)
+    service.drain()
+    assert compiler.calls == 3
     pages = [
         item
         for item in composition.state.employee_documents.values()
         if item.kind is DataKind.KNOWLEDGE_PAGE
     ]
-    assert sorted(item.version for item in pages) == [1, 1]
+    assert sorted(item.version for item in pages) == [1, 1, 1]
+    generations = []
+    for page in pages:
+        raw = composition.document_materializer.resolve_path(
+            "agt_alpha", DataKind.KNOWLEDGE_PAGE, page.source_id
+        ).absolute.read_text(encoding="utf-8")
+        fields, _body = parse_knowledge_page(raw)
+        generations.append(fields["knowledge_generation"])
+    assert sorted(generations) == [1, 2, 3]
     index = [
         item
         for item in composition.state.employee_documents.values()
         if item.kind is DataKind.KNOWLEDGE_INDEX
     ]
-    assert [item.version for item in index] == [1, 2]
+    assert [item.version for item in index] == [1, 2, 3]
     close_knowledge_composition(writer, composition)
 
 

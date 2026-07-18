@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 import pytest
 
 from src.autonomous.journal.blob_store import BlobRef
+from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.team.models import TeamAssignmentV2, TeamRunPhase, TeamRunV2
-from src.autonomous.team.projection import TeamProjectionError, _assert_no_open_effects
+from src.autonomous.team.projection import (
+    TeamProjectionError,
+    _apply_event,
+    _assert_no_open_effects,
+)
 
 
 def _ref() -> BlobRef:
     return BlobRef(
         blob_hash="a" * 64,
         payload_hash="b" * 64,
-        labels_hash="c" * 64,
+        labels_hash=hashlib.sha256(b"{}").hexdigest(),
         key_ref="key",
         size=1,
     )
@@ -81,3 +87,31 @@ def test_team_run_phase_contract_exposes_required_states() -> None:
         "blocked",
         "canceled",
     }
+
+
+def test_completed_run_requires_durable_evidence_for_every_done_criterion() -> None:
+    run = TeamRunV2(
+        "teamrun2_evidence",
+        "tenant_1",
+        "oc_team",
+        "",
+        "om_1",
+        "ou_1",
+        _ref(),
+        "goal",
+        ("deliverable_non_empty", "review_completed"),
+        "session",
+        phase=TeamRunPhase.REVIEWING,
+    )
+    event = JournalEvent(
+        "team.v2.run.completed",
+        run.run_id,
+        {
+            "run_id": run.run_id,
+            "result_ref": _ref().to_dict(),
+            "done_checks": {"deliverable_non_empty": True},
+        },
+    )
+
+    with pytest.raises(TeamProjectionError, match="done criteria"):
+        _apply_event({run.run_id: run}, {}, {}, {}, event)

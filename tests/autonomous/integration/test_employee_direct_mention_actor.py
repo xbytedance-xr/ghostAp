@@ -38,7 +38,9 @@ def test_direct_mention_wakes_only_named_employee_mailbox(tmp_path) -> None:
 
     writer = make_writer(tmp_path)
     backend = _DirectBackend()
-    service = EmployeeTeamService(writer=writer, backend=backend)
+    service = EmployeeTeamService(
+        writer=writer, backend=backend, runtime_mode="legacy_pipeline"
+    )
     acceptance_id = service.dispatch_direct(
         target=TeamTarget("agt_alpha", "Alpha", "coder", ("python",)),
         tenant_key="tenant_1",

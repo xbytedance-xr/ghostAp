@@ -91,6 +91,49 @@ def test_employee_runtime_mutation_requires_admin_dm(monkeypatch) -> None:
     assert "仅允许配置管理员" in handler.send_text_to_chat.call_args.args[1]
 
 
+def test_status_prefers_persistent_employee_runtime_when_available(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.autonomous.manager.cards import EmployeeRuntimeCardView
+    from src.feishu.handlers.slock import SlockHandler
+
+    monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
+    facade = MagicMock()
+    facade.list_employee_runtime_statuses.return_value = (
+        EmployeeRuntimeCardView(
+            agent_id="agt_atlas",
+            name="Atlas",
+            emoji="🧭",
+            role="reviewer",
+            tool="codex",
+            model="gpt-test",
+            employee_state="active",
+            bot_state="ready",
+            bot_generation=2,
+            actor_state="ready_warm",
+            mailbox_depth=1,
+            can_accept=True,
+            identity_version=4,
+            knowledge_generation=3,
+            active_assignment_id="asg_1",
+            last_checkpoint="journal:9",
+        ),
+    )
+    handler = object.__new__(SlockHandler)
+    handler.ctx = SimpleNamespace(employee_runtime_facade=facade)
+    handler.reply_card = MagicMock()
+    handler._get_engine_manager = MagicMock()
+
+    handler.show_slock_status("om_status", "oc_team")
+
+    facade.list_employee_runtime_statuses.assert_called_once_with("tenant_a")
+    handler._get_engine_manager.assert_not_called()
+    payload = handler.reply_card.call_args.args[1]
+    assert "员工运行时总览（1人）" in payload
+    assert "asg_1" in payload and "journal:9" in payload
+
+
 def _make_agent(
     agent_id: str = "agent-1",
     name: str = "TestBot",

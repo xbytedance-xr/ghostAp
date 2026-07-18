@@ -322,6 +322,7 @@ def test_team_timeout_anchors_cancel_interrupts_live_runner_before_retry(
     service = EmployeeTeamService(
         writer=harness.writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=0.5,
         poll_seconds=0.001,
     )
@@ -637,7 +638,7 @@ def test_gateway_running_cancel_invokes_engine_and_overrides_late_success() -> N
             return True
 
     engine = _Engine()
-    gateway = module.EmployeeSlockGateway()
+    gateway = module.EmployeeSlockGateway(runtime_mode="legacy_one_shot")
     permit = gateway.issue_permit(
         binding=binding,
         prompt="budgeted",

@@ -416,13 +416,25 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         # Priority 2: @AgentName precise routing (must be before NLI per AC-01)
+        from ...thread.manager import get_current_mentioned_names
+
+        mention_names = tuple(
+            dict.fromkeys(
+                (*get_current_mentioned_names(), *re.findall(r"@([\w\-]+)", text or ""))
+            )
+        )
         at_match = re.search(r"@([\w\-]+)", text or "")
         target_agent = None
 
-        if at_match:
+        if mention_names:
             membership = getattr(self.ctx, "employee_membership_service", None)
             team_service = getattr(self.ctx, "employee_team_service", None)
             if membership is not None and team_service is not None:
+                from ...autonomous.ingress import (
+                    GroupRouteKind,
+                    GroupRouteRequest,
+                    decide_group_route,
+                )
                 from ...thread.manager import (
                     get_current_sender_id,
                     get_current_tenant_key,
@@ -430,15 +442,41 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
                 tenant_key = get_current_tenant_key() or ""
                 requester = get_current_sender_id() or ""
-                employee = membership.find_employee_by_name(
-                    tenant_key, at_match.group(1)
+                employees = []
+                for name in mention_names:
+                    employee = membership.find_employee_by_name(tenant_key, name)
+                    if (
+                        employee is not None
+                        and chat_id in employee.member_groups
+                        and not membership.is_degraded(employee.agent_id, chat_id)
+                    ):
+                        employees.append(employee)
+                employees = list(
+                    {employee.agent_id: employee for employee in employees}.values()
                 )
-                if (
-                    employee is not None
-                    and chat_id in employee.member_groups
-                    and not membership.is_degraded(employee.agent_id, chat_id)
-                    and requester
-                ):
+                if employees and requester and tenant_key:
+                    decision = decide_group_route(
+                        GroupRouteRequest(
+                            tenant_key=tenant_key,
+                            chat_id=chat_id,
+                            sender_principal_id=requester,
+                            sender_type="user",
+                            sender_tenant_key=tenant_key,
+                            text=text.strip(),
+                            mentioned_agent_ids=tuple(
+                                employee.agent_id for employee in employees
+                            ),
+                        )
+                    )
+                    if decision.kind is GroupRouteKind.TEAM_TASK:
+                        self._start_visible_employee_team_task(
+                            message_id=message_id,
+                            chat_id=chat_id,
+                            text=text.strip(),
+                            team_service=team_service,
+                        )
+                        return
+                    employee = employees[0]
                     try:
                         team_service.dispatch_direct(
                             target=TeamTarget(
@@ -636,49 +674,64 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         team_service = getattr(self.ctx, "employee_team_service", None)
         if team_service is not None:
-            from ...thread.manager import (
-                get_current_sender_id,
-                get_current_tenant_key,
+            return self._start_visible_employee_team_task(
+                message_id=message_id,
+                chat_id=chat_id,
+                text=text.strip(),
+                team_service=team_service,
             )
-
-            tenant_key = get_current_tenant_key() or ""
-            requester_principal_id = get_current_sender_id() or ""
-            if not tenant_key or not requester_principal_id:
-                self.reply_text(message_id, "⚠️ 无法确认团队任务的租户或发起人身份。")
-                return True
-            try:
-                run = team_service.start_task(
-                    tenant_key=tenant_key,
-                    message_id=message_id,
-                    chat_id=chat_id,
-                    requester_principal_id=requester_principal_id,
-                    task=text.strip(),
-                )
-            except TeamAdmissionError as exc:
-                if exc.error_code == "no_active_team_employee":
-                    self.reply_text(
-                        message_id,
-                        "⚠️ 当前群没有可执行员工，团队任务尚未受理。"
-                        "服务会自动恢复本地员工 Channel；请稍后重试，"
-                        "若持续失败请检查该员工是否已通过 `/role add <名字>` 加入本群。",
-                    )
-                else:
-                    self.reply_text(
-                        message_id,
-                        "ℹ️ 该消息对应的团队任务已经结束，请发送一条新消息重试。",
-                    )
-                return True
-            except Exception:
-                logger.exception("Visible employee team admission failed")
-                self.reply_text(message_id, "⚠️ 团队任务未能安全入队，请检查员工与群成员状态。")
-                return True
-            self.reply_text(
-                message_id,
-                f"👥 团队任务已受理（`{run.run_id[:20]}…`），员工将依次执行、交接、评审并汇总。",
-            )
-            return True
 
         self.assign_task(message_id, chat_id, text.strip(), "", project)
+        return True
+
+    def _start_visible_employee_team_task(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        team_service,
+    ) -> bool:
+        from ...thread.manager import (
+            get_current_sender_id,
+            get_current_tenant_key,
+        )
+
+        tenant_key = get_current_tenant_key() or ""
+        requester_principal_id = get_current_sender_id() or ""
+        if not tenant_key or not requester_principal_id:
+            self.reply_text(message_id, "⚠️ 无法确认团队任务的租户或发起人身份。")
+            return True
+        try:
+            run = team_service.start_task(
+                tenant_key=tenant_key,
+                message_id=message_id,
+                chat_id=chat_id,
+                requester_principal_id=requester_principal_id,
+                task=text,
+            )
+        except TeamAdmissionError as exc:
+            if exc.error_code == "no_active_team_employee":
+                self.reply_text(
+                    message_id,
+                    "⚠️ 当前群没有可执行员工，团队任务尚未受理。"
+                    "服务会自动恢复本地员工 Channel；请稍后重试，"
+                    "若持续失败请检查该员工是否已通过 `/role add <名字>` 加入本群。",
+                )
+            else:
+                self.reply_text(
+                    message_id,
+                    "ℹ️ 该消息对应的团队任务已经结束，请发送一条新消息重试。",
+                )
+            return True
+        except Exception:
+            logger.exception("Visible employee team admission failed")
+            self.reply_text(message_id, "⚠️ 团队任务未能安全入队，请检查员工与群成员状态。")
+            return True
+        self.reply_text(
+            message_id,
+            f"👥 团队任务已受理（`{run.run_id[:20]}…`），员工将依次执行、交接、评审并汇总。",
+        )
         return True
 
     def _autonomous_task_planning_enabled(self) -> bool:
@@ -1684,7 +1737,33 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     # ------------------------------------------------------------------
 
     def show_slock_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        """Show slock engine status with refresh button."""
+        """Show persistent employee runtime, falling back to legacy Slock status."""
+        from ...thread.manager import get_current_tenant_key
+
+        tenant_key = get_current_tenant_key() or ""
+        ctx = getattr(self, "ctx", None)
+        runtime_facade = getattr(ctx, "employee_runtime_facade", None)
+        list_runtime = getattr(runtime_facade, "list_employee_runtime_statuses", None)
+        if tenant_key and callable(list_runtime):
+            try:
+                runtime_views = tuple(list_runtime(tenant_key))
+            except Exception:
+                logger.exception("employee runtime overview facade failed")
+            else:
+                if runtime_views:
+                    from ...autonomous.manager.cards import (
+                        build_employee_runtime_overview_card,
+                    )
+
+                    self.reply_card(
+                        message_id,
+                        json.dumps(
+                            build_employee_runtime_overview_card(runtime_views),
+                            ensure_ascii=False,
+                        ),
+                    )
+                    return
+
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))

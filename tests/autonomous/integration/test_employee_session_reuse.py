@@ -45,6 +45,7 @@ def _bootstrap(tmp_path: Path, agent_id: str, *, model: str = "m"):
             security_profile="employee_v1",
         ),
         project_root=str(tmp_path / "project"),
+        identity_version=1,
     )
 
 

@@ -577,6 +577,7 @@ def _real_coordinator_harness(
     channels = _Channels()
     context = _Context()
     coordinator_kwargs = dict(
+        employee_runtime_mode="legacy_one_shot",
         writer=writer,
         hire_service=hire,
         ingress_service=ingress,
@@ -769,7 +770,7 @@ def test_forged_or_reconstructed_permit_requires_gateway_issuance() -> None:
         security_profile="employee_v1",
     )
     engine = _Engine()
-    gateway = module.EmployeeSlockGateway()
+    gateway = module.EmployeeSlockGateway(runtime_mode="legacy_one_shot")
     permit = gateway.issue_permit(
         binding=binding,
         prompt="budgeted",
@@ -903,6 +904,7 @@ def test_shadow_gateway_audits_actor_input_without_second_model_call(tmp_path) -
                 tenant_key="employee",
                 agent=employee,
                 project_root=self.root_path,
+                identity_version=0,
             ).wrap_prompt(prompt)
 
     binding = _binding(module)
@@ -1015,7 +1017,7 @@ def test_issued_permit_executes_a_frozen_agent_snapshot() -> None:
             observed["agent"] = agent
             return "done"
 
-    gateway = module.EmployeeSlockGateway()
+    gateway = module.EmployeeSlockGateway(runtime_mode="legacy_one_shot")
     permit = gateway.issue_permit(
         binding=binding,
         prompt="budgeted",
@@ -1057,7 +1059,7 @@ def test_gateway_maps_all_five_terminal_statuses(outcome, expected) -> None:
                 raise outcome
             return outcome
 
-    gateway = module.EmployeeSlockGateway()
+    gateway = module.EmployeeSlockGateway(runtime_mode="legacy_one_shot")
     permit = gateway.issue_permit(
         binding=binding,
         prompt="budgeted",
@@ -1606,9 +1608,8 @@ def test_employee_public_runner_preserves_typed_terminal_outcome(
         )
 
 
-def test_employee_unsupported_backend_fails_before_spawn() -> None:
+def test_employee_ttadk_backend_uses_explicitly_scoped_session_path() -> None:
     from src.slock_engine.engine import SlockEngine
-    from src.slock_engine.exceptions import SecurityPolicyDegradedError
     from src.slock_engine.models import AgentIdentity
 
     engine = object.__new__(SlockEngine)
@@ -1620,13 +1621,13 @@ def test_employee_unsupported_backend_fails_before_spawn() -> None:
         security_profile="employee_v1",
     )
 
-    with pytest.raises(SecurityPolicyDegradedError, match="pre-spawn"):
-        engine.run_agent_session(
-            agent,
-            "prompt",
-            env={"HOME": "/tmp/employee", "PATH": "/usr/bin"},
-        )
-    assert calls == []
+    engine.run_agent_session(
+        agent,
+        "prompt",
+        env={"HOME": "/tmp/employee", "PATH": "/usr/bin"},
+    )
+
+    assert calls == ["spawn"]
 
 
 def test_employee_process_env_excludes_manager_vault_and_peer_secrets() -> None:
@@ -1986,6 +1987,57 @@ def test_team_ordering_failure_uses_canonical_partial_and_records_warning(
     harness.close()
 
 
+def test_direct_ordering_failure_uses_canonical_partial_and_continues(
+    tmp_path,
+) -> None:
+    from dataclasses import replace as dataclass_replace
+
+    from src.autonomous.context import (
+        ContextQuality,
+        ContextUnavailableError,
+        ContextUnavailableReason,
+        ContextWarning,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+    complete_context = harness.coordinator._context  # noqa: SLF001
+
+    class _OrderingThenLedger:
+        def assemble(self, _request):
+            raise ContextUnavailableError(ContextUnavailableReason.ORDERING)
+
+        def assemble_canonical_partial(
+            self,
+            request,
+            *,
+            warning_reason,
+            causal_event_id,
+        ):
+            assert warning_reason is ContextUnavailableReason.ORDERING
+            assert causal_event_id.startswith("direct:")
+            return dataclass_replace(
+                complete_context.assemble(request),
+                quality=ContextQuality.CANONICAL_PARTIAL,
+                warnings=(ContextWarning("order_unavailable", "lark"),),
+            )
+
+    harness.coordinator._context = _OrderingThenLedger()  # noqa: SLF001
+    prepared = harness.coordinator.prepare_next()
+
+    assert prepared is not None
+    assert any(
+        event.event_type == "context.warning.recorded"
+        and event.payload["quality"] == "canonical_partial"
+        for frame in harness.writer.replay()
+        for event in frame.events
+    )
+    assert all(
+        record.reason_code != "context_unavailable"
+        for record in harness.router.state.by_acceptance_id.values()
+    )
+    harness.close()
+
+
 def test_team_absolute_deadline_propagates_remaining_permit_duration(tmp_path) -> None:
     harness = _real_coordinator_harness(
         tmp_path,
@@ -2247,7 +2299,7 @@ def test_transient_context_failure_retries_durably_then_terminalizes(
     assert restarted.prepare_next() is None
     terminal = next(iter(harness.router.state.by_acceptance_id.values()))
     assert terminal.state == "terminal"
-    assert terminal.reason_code == "context_unavailable"
+    assert terminal.reason_code == "canonical_context_unavailable"
     assert unavailable.calls == 3
     harness.close()
 
@@ -2464,7 +2516,7 @@ def test_gateway_rejects_capability_binding_mismatch() -> None:
         security_profile="employee_v1",
     )
     with pytest.raises(module.DispatchPermitAuthorityError, match="mismatch"):
-        module.EmployeeSlockGateway().issue_permit(
+        module.EmployeeSlockGateway(runtime_mode="legacy_one_shot").issue_permit(
             binding=binding,
             prompt="budgeted",
             engine=object(),

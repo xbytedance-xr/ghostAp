@@ -9,8 +9,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..domain import EmployeeState
 from ..journal.writer import JournalWriter
-from ..workspace import EmployeeWorkspaceProjector
+from ..workspace import EmployeeWorkspaceProjector, EmployeeWorkspaceSource
 from .facades import EmployeeDocumentMaterializer, EmployeeMemoryFacade
 from .keyring import EmployeeDataKeyring, build_employee_data_storage
 from .materializer import DailyHistoryMaterializer
@@ -278,11 +279,139 @@ def build_employee_data_composition(
         context_factory=context_factory,
         audit_port=service,
     )
+    from ..gateway.projection import GatewayProjectionState, reduce_gateway_frame
     from ..journal.projections import ProjectionRepository
+    from ..team.models import TeamAssignmentStatus, TeamRunPhase
+    from ..team.projection import rebuild_team_projection
+
+    def workspace_source_provider(
+        tenant_key: str,
+        agent_id: str,
+    ) -> EmployeeWorkspaceSource:
+        frames = tuple(writer.replay())
+        workforce = ProjectionRepository().rebuild(frames)
+        employee = workforce.employees.get(agent_id)
+        if (
+            employee is None
+            or employee.tenant_key != tenant_key
+            or employee.state is EmployeeState.ARCHIVED
+        ):
+            raise KeyError(agent_id)
+        data_snapshot = service.rebuild_projection()
+        documents = tuple(
+            document
+            for document in data_snapshot.employee_documents.values()
+            if document.tenant_key == tenant_key
+            and document.agent_id == agent_id
+            and not document.tombstoned
+        )
+        knowledge_generation = max(
+            (
+                document.version
+                for document in documents
+                if document.kind
+                in {DataKind.KNOWLEDGE_PAGE, DataKind.KNOWLEDGE_INDEX}
+            ),
+            default=0,
+        )
+        source_refs = tuple(
+            (
+                document.source_id,
+                document.content_hash,
+                document.kind.value,
+                "employee",
+            )
+            for document in sorted(
+                (
+                    item
+                    for item in documents
+                    if item.kind is DataKind.KNOWLEDGE_PAGE
+                    and data_snapshot.latest_employee_document.get(
+                        (
+                            item.tenant_key,
+                            item.agent_id,
+                            item.kind.value,
+                            item.source_id,
+                        )
+                    )
+                    == item.document_id
+                ),
+                key=lambda item: (item.source_id, item.version),
+            )[-100:]
+        )
+        team = rebuild_team_projection(frames)
+        active_team_assignments = tuple(
+            assignment
+            for assignment in team.assignments.values()
+            if assignment.agent_id == agent_id
+            and assignment.status
+            in {
+                TeamAssignmentStatus.CREATED,
+                TeamAssignmentStatus.CLAIMED,
+                TeamAssignmentStatus.RUNNING,
+            }
+            and team.runs[assignment.run_id].tenant_key == tenant_key
+            and team.runs[assignment.run_id].phase
+            not in {
+                TeamRunPhase.COMPLETED,
+                TeamRunPhase.BLOCKED,
+                TeamRunPhase.CANCELED,
+            }
+        )
+        gateway = GatewayProjectionState()
+        for frame in frames:
+            reduce_gateway_frame(gateway, frame)
+        active_attempts = tuple(
+            attempt
+            for attempt in gateway.attempts.values()
+            if attempt.binding.tenant_key == tenant_key
+            and attempt.binding.agent_id == agent_id
+            and attempt.dispatch_committed
+            and not attempt.terminal_status
+        )
+        active_assignment_id = (
+            sorted(
+                active_team_assignments,
+                key=lambda item: item.assignment_id,
+            )[-1].assignment_id
+            if active_team_assignments
+            else max(
+                active_attempts,
+                key=lambda item: item.dispatch_sequence,
+            ).binding.task_id
+            if active_attempts
+            else ""
+        )
+        checkpoint_sequence = max(
+            (item.dispatch_sequence for item in active_attempts),
+            default=0,
+        )
+        return EmployeeWorkspaceSource(
+            tenant_key=employee.tenant_key,
+            agent_id=employee.agent_id,
+            name=employee.name,
+            role=employee.role,
+            persona=employee.persona,
+            personality_traits=employee.personality_traits,
+            capabilities=employee.capabilities,
+            permissions=employee.permissions,
+            tool=employee.tool,
+            model=employee.model,
+            identity_version=employee.aggregate_version,
+            projection_sequence=workforce.cursor_sequence,
+            projection_hash=workforce.cursor_hash,
+            knowledge_generation=knowledge_generation,
+            active_assignment_id=active_assignment_id,
+            checkpoint_ref=(
+                f"journal:{checkpoint_sequence}" if checkpoint_sequence else ""
+            ),
+            source_refs=source_refs,
+        )
 
     workspace_projector = EmployeeWorkspaceProjector(
         agents_root,
         state_provider=lambda: ProjectionRepository().rebuild(writer.replay()),
+        source_provider=workspace_source_provider,
     )
     composition = EmployeeDataComposition(
         service=service,

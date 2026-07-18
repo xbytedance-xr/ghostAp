@@ -150,7 +150,9 @@ def test_team_admission_rejects_before_creating_run_without_active_employee(
 ) -> None:
     writer = make_writer(tmp_path)
     backend = _NoActiveEmployeeBackend()
-    service = EmployeeTeamService(writer=writer, backend=backend)
+    service = EmployeeTeamService(
+        writer=writer, backend=backend, runtime_mode="legacy_pipeline"
+    )
 
     with pytest.raises(TeamAdmissionError, match="no_active_team_employee") as error:
         service.start_task(
@@ -176,7 +178,9 @@ def test_existing_terminal_team_run_is_not_readmitted(tmp_path) -> None:
     from src.autonomous.journal.frame import JournalEvent
 
     writer = make_writer(tmp_path)
-    service = EmployeeTeamService(writer=writer, backend=_Backend())
+    service = EmployeeTeamService(
+        writer=writer, backend=_Backend(), runtime_mode="legacy_pipeline"
+    )
     run_id = "teamrun_" + hashlib.sha256(b"tenant_1\0om_terminal_replay").hexdigest()
     service._commit(  # noqa: SLF001
         JournalEvent(
@@ -218,7 +222,9 @@ def test_existing_terminal_team_run_is_not_readmitted(tmp_path) -> None:
 def test_close_during_admission_prevents_run_creation(tmp_path) -> None:
     writer = make_writer(tmp_path)
     backend = _BlockingAdmissionBackend()
-    service = EmployeeTeamService(writer=writer, backend=backend)
+    service = EmployeeTeamService(
+        writer=writer, backend=backend, runtime_mode="legacy_pipeline"
+    )
     errors: list[BaseException] = []
 
     def admit() -> None:
@@ -260,6 +266,7 @@ def test_concurrent_same_message_creates_one_team_run(tmp_path) -> None:
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=1,
         poll_seconds=0.001,
     )
@@ -318,6 +325,7 @@ def test_v1_team_run_uses_fixed_analysis_review_synthesis_pipeline(tmp_path) -> 
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=1,
         poll_seconds=0.001,
     )
@@ -352,7 +360,9 @@ def test_v1_team_run_uses_fixed_analysis_review_synthesis_pipeline(tmp_path) -> 
 def test_restart_marks_unfinished_run_action_required(tmp_path) -> None:
     writer = make_writer(tmp_path)
     backend = _Backend()
-    service = EmployeeTeamService(writer=writer, backend=backend)
+    service = EmployeeTeamService(
+        writer=writer, backend=backend, runtime_mode="legacy_pipeline"
+    )
     service._executor.shutdown(wait=True)
     service._closed = True
 
@@ -395,6 +405,7 @@ def test_deadline_final_poll_observes_gateway_terminal_result(tmp_path) -> None:
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=1,
         poll_seconds=0,
         clock=lambda: next(clock_values),
@@ -435,6 +446,7 @@ def test_team_step_deadline_preserves_microsecond_budget(tmp_path) -> None:
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=0.0005,
         poll_seconds=0,
         clock=lambda: base,
@@ -468,6 +480,7 @@ def test_team_timeout_cancels_before_retry_admission(tmp_path) -> None:
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=0.001,
         poll_seconds=0.002,
     )
@@ -502,6 +515,7 @@ def test_team_cancel_pending_does_not_admit_retry(tmp_path) -> None:
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=0.001,
         poll_seconds=0.002,
     )
@@ -531,6 +545,7 @@ def test_close_fence_prevents_retry_submission(tmp_path) -> None:
     service = EmployeeTeamService(
         writer=writer,
         backend=backend,
+        runtime_mode="legacy_pipeline",
         attempt_timeout_seconds=30,
         poll_seconds=0,
     )
@@ -568,7 +583,9 @@ def test_team_run_terminal_cannot_regress_to_stopping(tmp_path) -> None:
     from src.autonomous.team.service import TeamServiceError
 
     writer = make_writer(tmp_path)
-    service = EmployeeTeamService(writer=writer, backend=_Backend())
+    service = EmployeeTeamService(
+        writer=writer, backend=_Backend(), runtime_mode="legacy_pipeline"
+    )
     service._executor.shutdown(wait=True)  # noqa: SLF001
     service._closed = True  # noqa: SLF001
     service._commit(  # noqa: SLF001
@@ -612,7 +629,9 @@ def test_team_run_reducer_rejects_non_exact_stopping_payload(tmp_path) -> None:
     from src.autonomous.team.service import TeamServiceError
 
     writer = make_writer(tmp_path)
-    service = EmployeeTeamService(writer=writer, backend=_Backend())
+    service = EmployeeTeamService(
+        writer=writer, backend=_Backend(), runtime_mode="legacy_pipeline"
+    )
     service._executor.shutdown(wait=True)  # noqa: SLF001
     service._closed = True  # noqa: SLF001
     service._commit(  # noqa: SLF001
@@ -645,7 +664,9 @@ def test_team_run_reducer_rejects_non_exact_stopping_payload(tmp_path) -> None:
 
 def test_close_between_progress_check_and_initial_step_writes_nothing(tmp_path, monkeypatch) -> None:
     writer = make_writer(tmp_path)
-    service = EmployeeTeamService(writer=writer, backend=_Backend())
+    service = EmployeeTeamService(
+        writer=writer, backend=_Backend(), runtime_mode="legacy_pipeline"
+    )
     state = TeamRunState(
         run_id="teamrun_initial_fence",
         tenant_key="tenant_1",
@@ -710,7 +731,9 @@ def test_close_between_progress_check_and_initial_step_writes_nothing(tmp_path, 
 def test_close_cannot_fence_after_notify_has_started(tmp_path, active, expected) -> None:
     writer = make_writer(tmp_path)
     backend = _BlockingNotifyBackend(active=active)
-    service = EmployeeTeamService(writer=writer, backend=backend)
+    service = EmployeeTeamService(
+        writer=writer, backend=backend, runtime_mode="legacy_pipeline"
+    )
     if active:
         state = service.start_task(
             tenant_key="tenant_1",

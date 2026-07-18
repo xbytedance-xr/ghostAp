@@ -203,7 +203,7 @@ class EmployeeTeamService:
         attempt_timeout_seconds: float = 600.0,
         poll_seconds: float = 0.1,
         clock: Callable[[], datetime] | None = None,
-        runtime_mode: str = "legacy_pipeline",
+        runtime_mode: str,
         blob_store: BlobStore | None = None,
         active_key_id: str = "",
         coordinator_tool: str = "coco",

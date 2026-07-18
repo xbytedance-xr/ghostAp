@@ -146,6 +146,9 @@ class EmployeeActor:
                             "backend": assignment.bootstrap.session_key.backend,
                             "model": assignment.bootstrap.session_key.model,
                             "profile": assignment.bootstrap.session_key.profile,
+                            "effort": assignment.bootstrap.session_key.effort,
+                            "identity_version": assignment.bootstrap.session_key.identity_version,
+                            "instruction_digest": assignment.bootstrap.session_key.instruction_digest,
                         },
                     },
                 )

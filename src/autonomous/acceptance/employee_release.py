@@ -294,7 +294,9 @@ class EmployeeReleaseGate:
     minimum_bot_count: int = 0
     minimum_duration_seconds: int = 0
     required_zero_metrics: tuple[str, ...] = ()
+    minimum_metrics: tuple[tuple[str, float], ...] = ()
     maximum_metrics: tuple[tuple[str, float, bool], ...] = ()
+    bounded_growth_metrics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -329,7 +331,9 @@ class EmployeeReleaseManifest:
             "minimum_bot_count",
             "minimum_duration_seconds",
             "required_zero_metrics",
+            "minimum_metrics",
             "maximum_metrics",
+            "bounded_growth_metrics",
         }
         for item in raw["gates"]:
             if not isinstance(item, dict) or not required <= set(item) <= required | optional:
@@ -343,7 +347,24 @@ class EmployeeReleaseManifest:
                 raise ValueError(f"invalid environment for {gate_id}")
             assertions = item["required_assertions"]
             zero_metrics = item.get("required_zero_metrics", [])
+            minimum_metrics = item.get("minimum_metrics", {})
             maximum_metrics = item.get("maximum_metrics", {})
+            bounded_growth_metrics = item.get("bounded_growth_metrics", [])
+            parsed_minimums: list[tuple[str, float]] = []
+            invalid_minimum = False
+            if isinstance(minimum_metrics, dict):
+                for key, minimum in minimum_metrics.items():
+                    if (
+                        not isinstance(key, str)
+                        or not key
+                        or isinstance(minimum, bool)
+                        or not isinstance(minimum, (int, float))
+                    ):
+                        invalid_minimum = True
+                        break
+                    parsed_minimums.append((key, float(minimum)))
+            else:
+                invalid_minimum = True
             parsed_maximums: list[tuple[str, float, bool]] = []
             invalid_maximum = False
             if isinstance(maximum_metrics, dict):
@@ -373,7 +394,14 @@ class EmployeeReleaseManifest:
                 or any(not isinstance(value, str) or not value for value in assertions)
                 or not isinstance(zero_metrics, list)
                 or any(not isinstance(value, str) or not value for value in zero_metrics)
+                or invalid_minimum
                 or invalid_maximum
+                or not isinstance(bounded_growth_metrics, list)
+                or any(
+                    not isinstance(value, str) or not value
+                    for value in bounded_growth_metrics
+                )
+                or len(set(bounded_growth_metrics)) != len(bounded_growth_metrics)
             ):
                 raise ValueError(f"invalid evidence criteria for {gate_id}")
             max_age = item["max_age_seconds"]
@@ -399,7 +427,9 @@ class EmployeeReleaseManifest:
                     minimum_bot_count=minimum_bot_count,
                     minimum_duration_seconds=minimum_duration,
                     required_zero_metrics=tuple(zero_metrics),
+                    minimum_metrics=tuple(sorted(parsed_minimums)),
                     maximum_metrics=tuple(sorted(parsed_maximums)),
+                    bounded_growth_metrics=tuple(sorted(bounded_growth_metrics)),
                 )
             )
         return cls(profile_id=raw["profile_id"], gates=tuple(gates))
@@ -659,6 +689,9 @@ def _gate_contract_passes(gate: EmployeeReleaseGate, record: EmployeeEvidenceRec
     for metric in gate.required_zero_metrics:
         if record.details.get(metric) != 0:
             return False
+    for metric, minimum in gate.minimum_metrics:
+        if not _number_at_least(record.details, metric, minimum):
+            return False
     for metric, maximum, exclusive in gate.maximum_metrics:
         value = record.details.get(metric)
         if (
@@ -667,6 +700,19 @@ def _gate_contract_passes(gate: EmployeeReleaseGate, record: EmployeeEvidenceRec
             or value > maximum
             or (exclusive and value >= maximum)
         ):
+            return False
+    for metric in gate.bounded_growth_metrics:
+        values = [record.details.get(f"{metric}_{suffix}") for suffix in ("baseline", "peak", "final")]
+        bot_count = record.details.get("bot_count")
+        if (
+            any(isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 for value in values)
+            or isinstance(bot_count, bool)
+            or not isinstance(bot_count, (int, float))
+            or bot_count < 0
+        ):
+            return False
+        baseline, peak, final = values
+        if peak < baseline or peak < final or peak > baseline + bot_count or final > baseline + bot_count:
             return False
     return True
 

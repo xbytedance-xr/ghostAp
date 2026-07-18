@@ -54,7 +54,11 @@ class EmployeeRuntimeCardView:
 
 
 def _runtime_markdown(view: EmployeeRuntimeCardView) -> list[dict[str, Any]]:
-    session_temperature = "warm" if view.actor_state == "ready_warm" else "cold"
+    session_temperature = {
+        "ready_warm": "warm",
+        "busy": "warm",
+        "ready_cold": "cold",
+    }.get(view.actor_state, "unavailable")
     admission = "可接任务" if view.can_accept else "不可接任务"
     model_label = f"{view.tool} / {view.model or 'default'}"
     elements: list[dict[str, Any]] = [
@@ -164,6 +168,30 @@ def build_employee_runtime_status_card(
         "header": {
             "title": {"tag": "plain_text", "content": f"员工运行时 · {view.name}"},
             "template": "orange" if view.error_code else "blue",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_employee_runtime_overview_card(
+    employees: tuple[EmployeeRuntimeCardView, ...],
+) -> dict[str, Any]:
+    """Render the complete, secret-free runtime state of a tenant's employees."""
+
+    elements: list[dict[str, Any]] = []
+    for index, view in enumerate(employees):
+        if index:
+            elements.append({"tag": "hr"})
+        elements.extend(_runtime_markdown(view))
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": f"员工运行时总览（{len(employees)}人）",
+            },
+            "template": "orange" if any(view.error_code for view in employees) else "blue",
         },
         "body": {"elements": elements},
     }

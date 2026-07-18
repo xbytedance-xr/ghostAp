@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
+from src.autonomous.data.models import DataKind
+from src.autonomous.domain import EmployeeState
 from src.autonomous.manager.cards import (
     EmployeeRuntimeCardView,
     build_employee_roster_card,
+    build_employee_runtime_overview_card,
     build_employee_runtime_status_card,
 )
 from src.autonomous.team.renderer import (
@@ -75,6 +79,22 @@ def test_runtime_card_omits_empty_assignment_warning_and_admin_blocks() -> None:
     assert "employee_runtime_" not in payload
 
 
+def test_runtime_card_does_not_call_degraded_or_stopped_session_cold() -> None:
+    degraded = json.dumps(
+        build_employee_runtime_status_card(_view(actor_state="degraded")),
+        ensure_ascii=False,
+    )
+    stopped = json.dumps(
+        build_employee_runtime_status_card(_view(actor_state="stopped")),
+        ensure_ascii=False,
+    )
+
+    assert "session unavailable" in degraded
+    assert "session unavailable" in stopped
+    assert "session cold" not in degraded
+    assert "session cold" not in stopped
+
+
 def test_action_required_card_names_code_and_preserves_completed_work() -> None:
     card = build_employee_runtime_status_card(
         _view(
@@ -101,6 +121,35 @@ def test_roster_shows_bot_and_actor_states_without_empty_details() -> None:
     assert "当前 Assignment" not in payload
 
 
+def test_runtime_overview_exposes_operational_fields_for_every_employee() -> None:
+    card = build_employee_runtime_overview_card(
+        (
+            _view(),
+            _view(
+                agent_id="agt_nova",
+                name="Nova",
+                active_assignment_id="",
+                active_run_id="",
+                last_checkpoint="",
+                context_quality="complete",
+                context_warnings=(),
+                mailbox_depth=2,
+                actor_state="ready_warm",
+            ),
+        )
+    )
+
+    payload = json.dumps(card, ensure_ascii=False)
+    assert "员工运行时总览（2人）" in payload
+    assert "Atlas" in payload and "Nova" in payload
+    assert "mailbox 0" in payload and "mailbox 2" in payload
+    assert "session cold" in payload and "session warm" in payload
+    assert "identity v12" in payload
+    assert "knowledge generation 7" in payload
+    assert "cp_14" in payload
+    assert "上下文部分可用" in payload
+
+
 def test_team_renderer_keeps_one_assignment_per_card_and_continues_long_output() -> None:
     renderer = EmployeeTeamRenderer(max_content_chars=80)
     bundle = renderer.render(
@@ -119,3 +168,50 @@ def test_team_renderer_keeps_one_assignment_per_card_and_continues_long_output()
     assert bundle.assignment_cards[0]["assignment_id"] == "asg_a"
     assert len(bundle.continuation_cards) == 2
     assert all(card["assignment_id"] == "asg_a" for card in bundle.continuation_cards)
+
+
+def test_runtime_view_reports_global_knowledge_generation() -> None:
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    documents = {
+        "page_a": SimpleNamespace(
+            agent_id="agt_atlas",
+            kind=DataKind.KNOWLEDGE_PAGE,
+            version=1,
+            tombstoned=False,
+        ),
+        "page_b": SimpleNamespace(
+            agent_id="agt_atlas",
+            kind=DataKind.KNOWLEDGE_PAGE,
+            version=1,
+            tombstoned=False,
+        ),
+        "index": SimpleNamespace(
+            agent_id="agt_atlas",
+            kind=DataKind.KNOWLEDGE_INDEX,
+            version=2,
+            tombstoned=False,
+        ),
+    }
+    runtime = EmployeeDepartmentRuntime()
+    runtime._data = SimpleNamespace(  # noqa: SLF001
+        service=SimpleNamespace(
+            rebuild_projection=lambda: SimpleNamespace(employee_documents=documents)
+        ),
+        knowledge_service=SimpleNamespace(list_review_items=lambda *_args: ()),
+    )
+    employee = SimpleNamespace(
+        agent_id="agt_atlas",
+        tenant_key="tenant_1",
+        name="Atlas",
+        emoji="🧭",
+        role="reviewer",
+        tool="codex",
+        model="gpt-test",
+        state=EmployeeState.ACTIVE,
+        aggregate_version=3,
+    )
+
+    view = runtime._employee_runtime_view(employee)  # noqa: SLF001
+
+    assert view.knowledge_generation == 2

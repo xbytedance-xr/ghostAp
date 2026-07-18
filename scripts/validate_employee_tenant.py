@@ -115,8 +115,13 @@ def _write_live_capture_template(
             details["duration_seconds"] = 0
         for metric in gate.required_zero_metrics:
             details[metric] = None
+        for metric, _minimum in gate.minimum_metrics:
+            details[metric] = None
         for metric, _maximum, _exclusive in gate.maximum_metrics:
             details[metric] = None
+        for metric in gate.bounded_growth_metrics:
+            for suffix in ("baseline", "peak", "final"):
+                details[f"{metric}_{suffix}"] = None
         records.append(
             {
                 "gate_id": gate.gate_id,
@@ -128,7 +133,12 @@ def _write_live_capture_template(
                 "attestor": "",
             }
         )
-    payload = (json.dumps(records, ensure_ascii=False, indent=2) + "\n").encode()
+    envelope = {
+        "schema_version": 1,
+        "binding": binding.to_dict(),
+        "records": records,
+    }
+    payload = (json.dumps(envelope, ensure_ascii=False, indent=2) + "\n").encode()
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
@@ -151,11 +161,26 @@ def _ingest_live_capture(
     binding: EmployeeEnvironmentBinding,
 ) -> BundleCheckpoint:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("live results must be a non-empty JSON list")
+    if not isinstance(raw, dict) or set(raw) != {
+        "schema_version",
+        "binding",
+        "records",
+    }:
+        raise ValueError("live results must be a bound capture envelope")
+    if raw["schema_version"] != 1:
+        raise ValueError("unsupported live capture schema")
+    try:
+        captured_binding = EmployeeEnvironmentBinding(**raw["binding"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid live capture binding") from exc
+    if captured_binding != binding:
+        raise ValueError("live capture binding does not match deployment")
+    records = raw["records"]
+    if not isinstance(records, list) or not records:
+        raise ValueError("live results must contain non-empty records")
     gates = {gate.gate_id: gate for gate in manifest.gates}
     candidates: list[dict[str, Any]] = []
-    for item in raw:
+    for item in records:
         required = {"gate_id", "status", "details", "captured_at", "environment", "tenant_hash", "attestor"}
         if not isinstance(item, dict) or set(item) != required:
             raise ValueError("invalid live result fields")

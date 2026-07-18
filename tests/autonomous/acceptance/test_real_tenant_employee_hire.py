@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import base64
 import os
 import time
 from pathlib import Path
@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from src.autonomous.acceptance.employee_release import (
-    BundleCheckpoint,
     EmployeeEnvironmentBinding,
     EmployeeEvidenceBundle,
+    EmployeeReleaseAttestation,
     EmployeeReleaseManifest,
     EmployeeReleaseStatus,
     evaluate_employee_release,
@@ -26,7 +26,9 @@ _REQUIRED_ENV = (
     "GHOSTAP_EMPLOYEE_STAGING_TENANT_HASH",
     "GHOSTAP_EMPLOYEE_PRODUCTION_TENANT_HASH",
     "GHOSTAP_EMPLOYEE_EVIDENCE_BUNDLE",
-    "GHOSTAP_EMPLOYEE_EVIDENCE_CHECKPOINT",
+    "GHOSTAP_EMPLOYEE_RELEASE_ATTESTATION",
+    "GHOSTAP_EMPLOYEE_RELEASE_PUBLIC_KEY",
+    "GHOSTAP_EMPLOYEE_RELEASE_KEY_ID",
 )
 
 
@@ -48,17 +50,25 @@ def test_real_tenant_employee_hire_release_profile() -> None:
         staging_tenant_hash=os.environ["GHOSTAP_EMPLOYEE_STAGING_TENANT_HASH"],
         production_tenant_hash=os.environ["GHOSTAP_EMPLOYEE_PRODUCTION_TENANT_HASH"],
     )
-    checkpoint_raw = json.loads(Path(os.environ["GHOSTAP_EMPLOYEE_EVIDENCE_CHECKPOINT"]).read_text(encoding="utf-8"))
-    checkpoint = BundleCheckpoint(
-        record_count=checkpoint_raw["record_count"],
-        head_hash=checkpoint_raw["head_hash"],
+    attestation = EmployeeReleaseAttestation.load(
+        Path(os.environ["GHOSTAP_EMPLOYEE_RELEASE_ATTESTATION"])
     )
+    public_key = base64.b64decode(
+        os.environ["GHOSTAP_EMPLOYEE_RELEASE_PUBLIC_KEY"],
+        validate=True,
+    )
+    assert attestation.verify(
+        public_key=public_key,
+        expected_key_id=os.environ["GHOSTAP_EMPLOYEE_RELEASE_KEY_ID"],
+        expected_binding=binding,
+        now=time.time(),
+    ), "real Employee tenant release attestation is invalid, stale, or rebound"
     evaluation = evaluate_employee_release(
         manifest=manifest,
         bundle=EmployeeEvidenceBundle(Path(os.environ["GHOSTAP_EMPLOYEE_EVIDENCE_BUNDLE"])),
         binding=binding,
         now=time.time(),
-        checkpoint=checkpoint,
+        checkpoint=attestation.checkpoint,
     )
 
     assert evaluation.status is EmployeeReleaseStatus.PASSED, (

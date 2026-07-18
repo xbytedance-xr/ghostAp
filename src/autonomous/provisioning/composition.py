@@ -69,6 +69,7 @@ from ..outbox.delivery import (
     EmployeeOutboxDeliveryCoordinator,
 )
 from ..outbox.lifecycle import EmployeeOutboxLifecycle
+from ..outbox.models import employee_outbox_id
 from ..outbox.projection import OutboxProjectionState
 from ..outbox.service import EmployeeOutboxService
 from ..supervisor.employee_channels import (
@@ -378,6 +379,72 @@ class _RuntimeTeamBackend:
             error_code=snapshot.error_code,
             retry_allowed=True,
         )
+
+    def publish_collaboration(
+        self,
+        *,
+        tenant_key: str,
+        chat_id: str,
+        agent_id: str,
+        team_run_id: str,
+        assignment_id: str,
+        acceptance_id: str,
+    ) -> str:
+        """Bind one completed assignment to its employee-Bot Outbox publication."""
+
+        runtime = self._runtime
+        dispatch = runtime._dispatch
+        outbox = runtime._outbox
+        delivery = runtime._outbox_delivery
+        ingress = runtime._ingress
+        if dispatch is None or outbox is None or delivery is None or ingress is None:
+            raise RuntimeError("team collaboration transport is unavailable")
+        dispatch_state = dispatch.state
+        attempt_id = dispatch_state.attempt_by_acceptance_id.get(acceptance_id)
+        lifecycle = dispatch_state.attempts.get(attempt_id or "")
+        binding = getattr(lifecycle, "binding", None)
+        if (
+            binding is None
+            or binding.attempt_id != attempt_id
+            or binding.acceptance_id != acceptance_id
+            or binding.tenant_key != tenant_key
+            or binding.agent_id != agent_id
+            or binding.chat_id != chat_id
+        ):
+            raise RuntimeError("team collaboration attempt authority is invalid")
+        payload = ingress.get_payload(acceptance_id)
+        if len(payload.normalized_parts) != 1:
+            raise RuntimeError("team collaboration payload is invalid")
+        part = payload.normalized_parts[0]
+        expected_step = assignment_id.rsplit(":", 1)[-1]
+        if (
+            not isinstance(part, Mapping)
+            or part.get("team_run_id") != team_run_id
+            or part.get("team_step_id") != expected_step
+            or assignment_id != f"{team_run_id}:assignment:{expected_step}"
+        ):
+            raise RuntimeError("team collaboration coordinates are invalid")
+        outbox_id = employee_outbox_id(tenant_key, agent_id, attempt_id)
+        snapshot = outbox.get_snapshot(outbox_id)
+        if not snapshot.state.terminal:
+            raise RuntimeError("team collaboration Outbox is not terminal")
+        publication = delivery.deliver(outbox_id)
+        message_id = getattr(publication, "message_id", "")
+        if not isinstance(message_id, str) or not message_id:
+            raise RuntimeError("team collaboration delivery is unavailable")
+        causal_event_id = "collab_" + hashlib.sha256(
+            "\0".join(
+                (outbox_id, message_id, team_run_id, assignment_id)
+            ).encode()
+        ).hexdigest()
+        if not outbox.record_collaboration_publication(
+            outbox_id=outbox_id,
+            team_run_id=team_run_id,
+            assignment_id=assignment_id,
+            causal_event_id=causal_event_id,
+        ):
+            raise RuntimeError("team collaboration publication conflicts")
+        return causal_event_id
 
     def submit_direct(
         self,
@@ -1061,7 +1128,8 @@ class EmployeeDepartmentRuntime:
                     document.version
                     for document in data_state.employee_documents.values()
                     if document.agent_id == agent_id
-                    and document.kind is DataKind.KNOWLEDGE_PAGE
+                    and document.kind
+                    in {DataKind.KNOWLEDGE_PAGE, DataKind.KNOWLEDGE_INDEX}
                     and not document.tombstoned
                 ),
                 default=0,
@@ -1361,21 +1429,6 @@ class EmployeeDepartmentRuntime:
                     type(exc).__name__,
                 )
                 self._execution_blockers = ("employee_actor_recovery",)
-        if not self._execution_blockers and self._team is not None:
-            try:
-                self._recovery_trace.append("team_coordinator")
-                recovered_team_runs = self._team.recover()
-                if recovered_team_runs:
-                    logger.warning(
-                        "employee team recovered %d interrupted run(s)",
-                        recovered_team_runs,
-                    )
-            except Exception as exc:
-                logger.error(
-                    "employee team recovery failed closed: %s",
-                    type(exc).__name__,
-                )
-                self._execution_blockers = ("team_recovery",)
         execution_recovered = not self._execution_blockers
         if execution_recovered:
             try:
@@ -1398,6 +1451,22 @@ class EmployeeDepartmentRuntime:
                     type(exc).__name__,
                 )
                 self._execution_blockers = ("employee_recovery",)
+                execution_recovered = False
+        if execution_recovered and self._team is not None:
+            try:
+                self._recovery_trace.append("team_coordinator")
+                recovered_team_runs = self._team.recover()
+                if recovered_team_runs:
+                    logger.warning(
+                        "employee team recovered %d interrupted run(s)",
+                        recovered_team_runs,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "employee team recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("team_recovery",)
                 execution_recovered = False
         if self._fire is not None and self._runtime_enabled:
             try:
@@ -1518,6 +1587,8 @@ class EmployeeDepartmentRuntime:
 
         ledger = self._group_ledger
         if ledger is None or not all((tenant_key, chat_id, message_id, sender_id)):
+            if self._runtime_enabled:
+                raise RuntimeError("employee group ledger is unavailable")
             return False
         ledger.publish(
             tenant_key=tenant_key,
@@ -1682,11 +1753,8 @@ class EmployeeDepartmentRuntime:
         try:
             legacy_base = str(
                 canonicalize_user_home_path(
-                    getattr(
-                        settings,
-                        "autonomous_slock_storage_base",
-                        default_slock_storage_base(),
-                    )
+                    getattr(settings, "autonomous_slock_storage_base", None)
+                    or default_slock_storage_base()
                 )
             )
             self._data = build_employee_data_composition(
@@ -1742,6 +1810,7 @@ class EmployeeDepartmentRuntime:
             logger.error(
                 "employee execution storage composition unavailable: %s",
                 type(exc).__name__,
+                exc_info=True,
             )
             if self._attachments is not None:
                 try:
@@ -1817,6 +1886,8 @@ class EmployeeDepartmentRuntime:
                         raise RuntimeError("legacy employee data import failed")
             data.service.cutover_to_canonical()
         data.rebuild_all()
+        if data.knowledge_service is not None:
+            data.knowledge_service.recover()
 
     def _compose_membership(
         self,
@@ -1907,11 +1978,8 @@ class EmployeeDepartmentRuntime:
 
         legacy_base = str(
             canonicalize_user_home_path(
-                getattr(
-                    settings,
-                    "autonomous_slock_storage_base",
-                    default_slock_storage_base(),
-                )
+                getattr(settings, "autonomous_slock_storage_base", None)
+                or default_slock_storage_base()
             )
         )
         authority = JournalFireAuthority(
@@ -1985,11 +2053,8 @@ class EmployeeDepartmentRuntime:
         try:
             legacy_base = str(
                 canonicalize_user_home_path(
-                    getattr(
-                        settings,
-                        "autonomous_slock_storage_base",
-                        default_slock_storage_base(),
-                    )
+                    getattr(settings, "autonomous_slock_storage_base", None)
+                    or default_slock_storage_base()
                 )
             )
 
@@ -2248,6 +2313,9 @@ class EmployeeDepartmentRuntime:
         dispatch = self._dispatch
         if ingress is None or router is None or dispatch is None:
             return False
+        employee_runtime = getattr(dispatch, "employee_runtime", None)
+        if employee_runtime is not None:
+            employee_runtime.sweep_idle()
         ingress.rebuild_projection()
         router.rebuild_projection()
         worked = False
@@ -3828,11 +3896,8 @@ class EmployeeDepartmentRuntime:
         try:
             legacy_base = str(
                 canonicalize_user_home_path(
-                    getattr(
-                        settings,
-                        "autonomous_slock_storage_base",
-                        default_slock_storage_base(),
-                    )
+                    getattr(settings, "autonomous_slock_storage_base", None)
+                    or default_slock_storage_base()
                 )
             )
             if self._data is None:

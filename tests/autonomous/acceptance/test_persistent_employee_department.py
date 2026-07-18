@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 from src.autonomous.acceptance.employee_release import EmployeeReleaseManifest
+from src.autonomous.gateway.coordinator import EmployeeDispatchCoordinator
+from src.autonomous.gateway.slock import EmployeeSlockGateway
+from src.autonomous.team.service import EmployeeTeamService
 from src.config.settings import Settings
 
 _PERSISTENT_REAL_TENANT_GATES = {
@@ -14,6 +18,7 @@ _PERSISTENT_REAL_TENANT_GATES = {
     "EMP-PARTIAL-CONTEXT",
     "EMP-SELECTIVE-WAKE",
     "EMP-FIRE-PERSISTENT",
+    "EMP-RUNTIME-AUTHORITY-ISOLATION",
     "EMP-SOAK-1",
     "EMP-SOAK-10",
     "EMP-SOAK-50",
@@ -36,6 +41,23 @@ def test_shadow_actor_and_coordinator_modes_are_explicit_and_non_fallback() -> N
     assert shadow.autonomous_employee_runtime_mode == "shadow"
     assert actor.autonomous_employee_runtime_mode == "actor"
     assert actor.autonomous_team_runtime_mode == "coordinator"
+
+
+def test_legacy_runtime_modes_can_only_be_selected_explicitly() -> None:
+    assert (
+        inspect.signature(EmployeeDispatchCoordinator).parameters[
+            "employee_runtime_mode"
+        ].default
+        is inspect.Parameter.empty
+    )
+    assert (
+        inspect.signature(EmployeeSlockGateway).parameters["runtime_mode"].default
+        is inspect.Parameter.empty
+    )
+    assert (
+        inspect.signature(EmployeeTeamService).parameters["runtime_mode"].default
+        is inspect.Parameter.empty
+    )
 
 
 def test_real_tenant_manifest_covers_persistent_runtime_cutover() -> None:

@@ -1321,7 +1321,9 @@ class FeishuWSClient:
         大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
         """
         from ..thread import (
+            get_current_thread_id,
             set_current_is_p2p,
+            set_current_mentioned_names,
             set_current_sender_id,
             set_current_sender_name,
             set_current_sender_union_id,
@@ -1379,6 +1381,21 @@ class FeishuWSClient:
                 else ""
             )
             set_current_tenant_key(_tenant_key or None)
+            structured_mentions = tuple(
+                dict.fromkeys(
+                    name
+                    for mention in (getattr(message, "mentions", None) or ())
+                    if isinstance((name := getattr(mention, "name", None)), str)
+                    and name
+                    and name == name.strip()
+                    and (
+                        not getattr(mention, "tenant_key", None)
+                        or not _tenant_key
+                        or getattr(mention, "tenant_key", None) == _tenant_key
+                    )
+                )
+            )
+            set_current_mentioned_names(structured_mentions)
             chat_type = "p2p" if _is_p2p else "group"
 
             root_id = getattr(message, "root_id", None)
@@ -1426,6 +1443,27 @@ class FeishuWSClient:
             if self.settings.allowed_user_ids and _sender_id not in self.settings.allowed_user_ids:
                 logger.debug("User %s not in allowed_user_ids, dropping message", _sender_id)
                 return
+
+            # Publish every authorized main-Bot group message before any
+            # programming/engine mode can bypass SMART routing.  When the
+            # canonical ledger is composed, failure is fail-closed so the
+            # current event can never execute without its durable context.
+            if not _is_p2p and text:
+                runtime = getattr(self, "_employee_department_runtime", None)
+                record_group_event = getattr(runtime, "record_group_event", None)
+                if callable(record_group_event):
+                    record_group_event(
+                        tenant_key=_tenant_key,
+                        chat_id=chat_id,
+                        thread_id=(
+                            get_current_thread_id()
+                            or getattr(message, "root_id", None)
+                            or ""
+                        ),
+                        message_id=message_id,
+                        sender_id=_sender_id,
+                        text=text,
+                    )
 
             # 3. Handle Images (if any)
             is_image_only = False

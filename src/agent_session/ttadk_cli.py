@@ -10,12 +10,14 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from typing import Callable, Optional
 
 from ..acp.models import ACPEvent, ACPEventType, PromptResult
 from ..ttadk.env_sandbox import build_ttadk_subprocess_env, resolve_ttadk_executable
 from ..utils.errors import get_error_detail
 from ..utils.retry import RetryPolicy, prompt_with_retry
+from .employee_cli_sandbox import EmployeeCLISandbox
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,14 @@ class SyncTTADKCLISession:
     - Stateless (no session ID management).
     """
 
-    def __init__(self, agent_type: str, cwd: str, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        agent_type: str,
+        cwd: str,
+        model_name: Optional[str] = None,
+        *,
+        employee_process_env: Mapping[str, str] | None = None,
+    ):
         self._agent_type = agent_type
         self._cwd = cwd
         self._model_name = model_name
@@ -42,6 +51,12 @@ class SyncTTADKCLISession:
         self.is_resumed: bool = False
         self._cancel_event = threading.Event()
         self._proc: Optional[subprocess.Popen] = None
+        self._tool_filter = None
+        self._employee_sandbox = (
+            EmployeeCLISandbox(cwd=cwd, process_env=employee_process_env)
+            if employee_process_env is not None
+            else None
+        )
 
     def describe_agent(self) -> str:
         return f"tool={self._tool_name} model={self._model_name or '(auto)'} backend=cli cwd={self._cwd}"
@@ -65,6 +80,31 @@ class SyncTTADKCLISession:
 
     def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
         return True
+
+    @property
+    def employee_process_env(self) -> dict[str, str] | None:
+        sandbox = self._employee_sandbox
+        return None if sandbox is None else sandbox.process_env
+
+    def set_tool_filter(self, tool_filter) -> None:
+        self._tool_filter = tool_filter
+
+    def get_tool_filter(self):
+        return self._tool_filter
+
+    def configure_employee_sandbox(
+        self,
+        *,
+        read_only_roots: Sequence[str],
+        writable_roots: Sequence[str],
+    ) -> None:
+        if self._employee_sandbox is None:
+            raise RuntimeError("employee CLI environment is unavailable")
+        self._employee_sandbox.configure(
+            command="ttadk",
+            read_only_roots=read_only_roots,
+            writable_roots=writable_roots,
+        )
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -146,7 +186,15 @@ class SyncTTADKCLISession:
             # Use unified environment sandbox for consistency and safety
             # This ensures PATH, PYTHONPATH, and other critical vars are set correctly
             # just like in other TTADK components (fetcher, runner).
-            env, _ = build_ttadk_subprocess_env(cwd=self._cwd, agent_type=self._agent_type, tool_name=self._tool_name)
+            if self._employee_sandbox is not None:
+                env = self._employee_sandbox.process_env
+                cmd = self._employee_sandbox.wrap_argv(cmd)
+            else:
+                env, _ = build_ttadk_subprocess_env(
+                    cwd=self._cwd,
+                    agent_type=self._agent_type,
+                    tool_name=self._tool_name,
+                )
 
             # Force unbuffered output to ensure real-time streaming
             env["PYTHONUNBUFFERED"] = "1"

@@ -1530,10 +1530,6 @@ class SlockEngine(BaseEngine):
         if agent.security_profile != "employee_v1":
             return self._run_acp_session(agent, prompt, timeout=timeout)
         self._record_legacy_employee_session_call()
-        if agent.agent_type.startswith("ttadk_"):
-            raise SecurityPolicyDegradedError(
-                "employee backend lacks pre-spawn tool isolation"
-            )
         if env is None:
             raise SecurityPolicyDegradedError(
                 "employee session environment is not explicitly scoped"
@@ -1574,6 +1570,7 @@ class SlockEngine(BaseEngine):
             tenant_key="employee",
             agent=agent,
             project_root=self.root_path,
+            identity_version=0,
         )
         return bootstrap.wrap_prompt(prompt)
 
@@ -1608,10 +1605,6 @@ class SlockEngine(BaseEngine):
 
         if agent.security_profile != "employee_v1":
             raise SecurityPolicyDegradedError("reusable lease requires employee_v1")
-        if agent.agent_type.startswith("ttadk_"):
-            raise SecurityPolicyDegradedError(
-                "employee backend lacks pre-spawn tool isolation"
-            )
         if not isinstance(env, dict):
             raise SecurityPolicyDegradedError(
                 "employee session environment is not explicitly scoped"
@@ -3303,6 +3296,21 @@ class SlockEngine(BaseEngine):
         capabilities = set(agent.capabilities or [])
         employee_policy = agent.security_profile == "employee_v1"
         effective_write_roots = write_roots if employee_policy else read_roots
+        configure_employee_sandbox = getattr(
+            session,
+            "configure_employee_sandbox",
+            None,
+        )
+        if employee_policy and callable(configure_employee_sandbox):
+            writable_cli_roots = (
+                effective_write_roots
+                if "file_write" in permissions and "file_write" in capabilities
+                else ()
+            )
+            configure_employee_sandbox(
+                read_only_roots=read_roots,
+                writable_roots=writable_cli_roots,
+            )
 
         def under_roots(path: str, roots: tuple[str, ...]) -> bool:
             if not roots:

@@ -664,6 +664,10 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val, type=None: client._slock_handler.handle_card_action(mid, cid, type, val),
         prefix="slock_",
     )
+    client._register_action(
+        lambda mid, cid, pid, val, type=None: client._slock_handler.handle_card_action(mid, cid, type, val),
+        prefix="employee_runtime_",
+    )
 
     # Generic ENGINE_STOP — routes to correct handler based on engine_type in value
     def _handle_engine_stop(mid, cid, pid, val):

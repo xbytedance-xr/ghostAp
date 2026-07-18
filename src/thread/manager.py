@@ -243,6 +243,9 @@ _current_is_p2p: contextvars.ContextVar[bool] = contextvars.ContextVar("current_
 _current_tenant_key: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "current_tenant_key", default=None
 )
+_current_mentioned_names: contextvars.ContextVar[tuple[str, ...]] = (
+    contextvars.ContextVar("current_mentioned_names", default=())
+)
 
 
 def get_thread_manager() -> ThreadContextManager:
@@ -299,6 +302,19 @@ def set_current_tenant_key(tenant_key: Optional[str]) -> None:
 
 def get_current_tenant_key() -> Optional[str]:
     return _current_tenant_key.get()
+
+
+def set_current_mentioned_names(names: tuple[str, ...]) -> None:
+    if not isinstance(names, tuple) or any(
+        not isinstance(name, str) or not name or name != name.strip()
+        for name in names
+    ):
+        raise ValueError("mentioned names must be a normalized tuple")
+    _current_mentioned_names.set(tuple(dict.fromkeys(names)))
+
+
+def get_current_mentioned_names() -> tuple[str, ...]:
+    return _current_mentioned_names.get()
 
 
 def set_current_sender_name(name: str) -> None:

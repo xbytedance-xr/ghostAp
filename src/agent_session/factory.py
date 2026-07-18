@@ -223,9 +223,6 @@ def create_engine_session(
     settings = get_settings()
     agent_type = (agent_type or "").lower()
     employee_env = current_employee_session_environment()
-    if employee_env is not None and agent_type.startswith("ttadk_"):
-        raise RuntimeError("employee backend lacks pre-spawn env and tool isolation")
-
     # TTADK/引擎侧 cwd 归一化：避免传入 "." 导致 TTADK 项目级缓存不落盘。
     raw_cwd = cwd
     norm_cwd = normalize_ttadk_cwd(raw_cwd)
@@ -259,8 +256,11 @@ def create_engine_session(
             model_name,
         )
 
-    if agent_type == "claude" and not require_tool_filter:
-        session: SyncSession = SyncClaudeCLISession(cwd=cwd)
+    if agent_type == "claude" and (not require_tool_filter or employee_env is not None):
+        session: SyncSession = SyncClaudeCLISession(
+            cwd=cwd,
+            employee_process_env=employee_env,
+        )
         session.start()
     elif agent_type.startswith("ttadk_"):
         # TTADK CLI mode: precheck model then use CLI session
@@ -284,7 +284,12 @@ def create_engine_session(
             )
 
             # 2. Create CLI session
-            session = SyncTTADKCLISession(agent_type=agent_type, cwd=cwd, model_name=resolved_model)
+            session = SyncTTADKCLISession(
+                agent_type=agent_type,
+                cwd=cwd,
+                model_name=resolved_model,
+                employee_process_env=employee_env,
+            )
             session.start()
 
         except Exception:

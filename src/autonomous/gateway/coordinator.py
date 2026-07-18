@@ -166,7 +166,7 @@ class EmployeeDispatchCoordinator:
         attempt_lifecycle: EmployeeAttemptLifecycle | None = None,
         admin_principal_ids: frozenset[str] = frozenset(),
         team_owner_resolver: Callable[[str], str] | None = None,
-        employee_runtime_mode: str = "legacy_one_shot",
+        employee_runtime_mode: str,
         employee_session_idle_ttl_seconds: float = 900.0,
         shadow_observer: Callable[[Mapping[str, object]], None] | None = None,
     ) -> None:
@@ -291,19 +291,24 @@ class EmployeeDispatchCoordinator:
         try:
             snapshot = self._context.assemble(grant.request)
         except ContextUnavailableError as exc:
-            if is_team_assignment and exc.reason in _TRANSIENT_CONTEXT_REASONS:
+            if exc.reason in _TRANSIENT_CONTEXT_REASONS:
                 partial = getattr(self._context, "assemble_canonical_partial", None)
                 if not callable(partial):
-                    record = self._router.defer_dispatch_candidate(
+                    self._router.defer_dispatch_candidate(
                         grant.record.acceptance_id,
                         terminal_reason="canonical_context_unavailable",
                     )
                     return None
                 try:
+                    causal_event_id = (
+                        f"{part['team_run_id']}:{part['team_step_id']}"
+                        if is_team_assignment
+                        else f"direct:{grant.record.acceptance_id}"
+                    )
                     snapshot = partial(
                         grant.request,
                         warning_reason=exc.reason,
-                        causal_event_id=f"{part['team_run_id']}:{part['team_step_id']}",
+                        causal_event_id=causal_event_id,
                     )
                 except ContextUnavailableError:
                     record = self._router.defer_dispatch_candidate(
@@ -316,15 +321,10 @@ class EmployeeDispatchCoordinator:
                     )
                     return None
             else:
-                if exc.reason in _TRANSIENT_CONTEXT_REASONS:
-                    record = self._router.defer_dispatch_candidate(
-                        grant.record.acceptance_id,
-                    )
-                else:
-                    record = self._router.reject_dispatch_candidate(
-                        grant.record.acceptance_id,
-                        reason_code="context_unavailable",
-                    )
+                record = self._router.reject_dispatch_candidate(
+                    grant.record.acceptance_id,
+                    reason_code="context_unavailable",
+                )
                 logger.warning(
                     "employee dispatch context unavailable; candidate %s: reason=%s",
                     "terminal" if record.state == "terminal" else "deferred",

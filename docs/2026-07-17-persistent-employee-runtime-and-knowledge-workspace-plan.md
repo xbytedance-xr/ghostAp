@@ -963,6 +963,8 @@ class EmployeeKnowledgeService:
 
   使用 `scripts/validate_employee_tenant.py --template-out <capture.json>` 生成与 release、commit、service instance 和 staging/production tenant hash 绑定的验收表。模板全部断言初始为 false，以独立 QA 实测结果填写后，必须在 `GHOSTAP_EMPLOYEE_ACCEPTANCE_LIVE=1` 下显式 ingest；缺失项继续返回 pending。
 
+  fallback 删除 selector 只接受独立 QA 签发的 Ed25519 attestation，不接受裸 checkpoint：设置 `GHOSTAP_EMPLOYEE_RELEASE_ATTESTATION`、base64 原始公钥 `GHOSTAP_EMPLOYEE_RELEASE_PUBLIC_KEY` 和 `GHOSTAP_EMPLOYEE_RELEASE_KEY_ID`；签名必须精确绑定 evidence checkpoint、release、commit、service instance 与两个 tenant hash。
+
   验收表必须记录以下证据，不能用 mock 代替：
 
   1. 新 Hire 员工冷启动后 `Bot READY / Agent READY_COLD`。

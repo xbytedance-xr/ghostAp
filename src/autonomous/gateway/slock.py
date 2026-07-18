@@ -43,7 +43,7 @@ class EmployeeSlockGateway:
     def __init__(
         self,
         *,
-        runtime_mode: str = "legacy_one_shot",
+        runtime_mode: str,
         runtime_supervisor: EmployeeRuntimeSupervisor | None = None,
         shadow_observer: Callable[[Mapping[str, object]], None] | None = None,
     ) -> None:
@@ -172,6 +172,7 @@ class EmployeeSlockGateway:
                     tenant_key=permit.binding.tenant_key,
                     agent=agent,
                     project_root=str(getattr(permit.engine, "root_path", "")),
+                    identity_version=permit.binding.employee_version,
                 )
                 assignment = EmployeeAssignment(
                     assignment_id=permit.binding.attempt_id,
@@ -253,6 +254,7 @@ class EmployeeSlockGateway:
                 tenant_key=permit.binding.tenant_key,
                 agent=agent,
                 project_root=str(getattr(permit.engine, "root_path", "")),
+                identity_version=permit.binding.employee_version,
             )
             actor_input = bootstrap.wrap_prompt(permit.prompt)
             preview_legacy = getattr(

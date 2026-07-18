@@ -62,6 +62,31 @@ class SessionCoordinatorDecisionProvider:
         targets: tuple[object, ...],
         task: str,
     ) -> CoordinatorDecision:
+        return self._invoke(
+            run,
+            targets,
+            task,
+            frozenset({CoordinatorAction.ASSIGN}),
+        )
+
+    def decide_next(
+        self,
+        run: TeamRunV2,
+        targets: tuple[object, ...],
+        context: str,
+        allowed_actions: frozenset[CoordinatorAction],
+    ) -> CoordinatorDecision:
+        if not allowed_actions:
+            raise ValueError("allowed coordinator actions are required")
+        return self._invoke(run, targets, context, allowed_actions)
+
+    def _invoke(
+        self,
+        run: TeamRunV2,
+        targets: tuple[object, ...],
+        context: str,
+        allowed_actions: frozenset[CoordinatorAction],
+    ) -> CoordinatorDecision:
         from src.agent_session import create_engine_session
 
         candidates = [
@@ -74,14 +99,20 @@ class SessionCoordinatorDecisionProvider:
             }
             for item in targets
         ]
+        allowed = ", ".join(sorted(action.value for action in allowed_actions))
+        phase = getattr(getattr(run, "phase", None), "value", "planning")
+        done_criteria = tuple(getattr(run, "done_criteria", ()))
         prompt = (
             "You are the GhostAP team coordinator. Select capable READY employees. "
             "Return JSON only with exactly: action, agent_ids, role, instruction, "
-            "depends_on, done_checks, reason_code. action must be assign. Maximum "
-            "fanout is 4. Never invent an agent_id.\n\n"
+            "depends_on, done_checks, reason_code. Maximum fanout is 4. Never invent "
+            "an agent_id. For complete, done_checks must contain every durable done "
+            "criterion and all values must be true.\n\n"
             f"Coordinator profile: {self._profile or 'provider-default'}; "
             f"effort: {self._effort or 'provider-default'}\n"
-            f"Task: {task}\nCandidates: {json.dumps(candidates, ensure_ascii=False)}"
+            f"Run phase: {phase}; allowed actions: {allowed}; "
+            f"done criteria: {json.dumps(done_criteria, ensure_ascii=False)}\n"
+            f"Context: {context}\nCandidates: {json.dumps(candidates, ensure_ascii=False)}"
         )
         with self._lock:
             session = self._sessions.get(run.coordinator_session_key)
@@ -108,7 +139,7 @@ class SessionCoordinatorDecisionProvider:
                 "reason_code",
             }:
                 raise ValueError
-            return CoordinatorDecision(
+            decision = CoordinatorDecision(
                 action=CoordinatorAction(str(value["action"])),
                 agent_ids=tuple(value["agent_ids"]),
                 role=str(value["role"]),
@@ -117,6 +148,9 @@ class SessionCoordinatorDecisionProvider:
                 done_checks=dict(value["done_checks"]),
                 reason_code=str(value["reason_code"]),
             )
+            if decision.action not in allowed_actions:
+                raise ValueError
+            return decision
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TeamCoordinatorError("invalid coordinator model decision") from exc
 
@@ -416,25 +450,56 @@ class TeamCoordinatorActor:
                 if reviewer is None:
                     self._block(run_id, "no_capable_team_reviewer")
                     return
+                independent_targets = tuple(
+                    item
+                    for item in targets
+                    if item.agent_id
+                    not in {assignment.agent_id for assignment in lead_assignments}
+                )
+                review_targets = independent_targets or targets
                 contribution = "\n\n".join(
                     self._read_text(item.contribution_ref)
                     for item in lead_assignments
                 )
-                decision = CoordinatorDecision(
-                    CoordinatorAction.REVIEW,
-                    (reviewer.agent_id,),
+                run = self.projection().runs[run_id]
+                decide_next = getattr(self._decide, "decide_next", None)
+                decision = (
+                    decide_next(
+                        run,
+                        review_targets,
+                        f"任务：{task}\n\n执行交付：{contribution[:4_000]}",
+                        frozenset(
+                            {CoordinatorAction.REVIEW, CoordinatorAction.BLOCK}
+                        ),
+                    )
+                    if callable(decide_next)
+                    else CoordinatorDecision(
+                        CoordinatorAction.REVIEW,
+                        (reviewer.agent_id,),
+                        role="review",
+                        instruction=(
+                            "独立审查交付；列出阻塞缺陷并给出明确修订建议。\n\n"
+                            f"任务：{task}\n\n交付：{contribution[:4_000]}"
+                        ),
+                        depends_on=tuple(
+                            item.assignment_id for item in lead_assignments
+                        ),
+                    )
+                )
+                if decision.action is CoordinatorAction.BLOCK:
+                    self._block(run_id, decision.reason_code)
+                    return
+                self._validate_round_assignment(
+                    decision,
+                    review_targets,
+                    action=CoordinatorAction.REVIEW,
                     role="review",
-                    instruction=(
-                        "独立审查交付；列出阻塞缺陷并给出明确修订建议。\n\n"
-                        f"任务：{task}\n\n交付：{contribution[:4_000]}"
-                    ),
-                    depends_on=tuple(item.assignment_id for item in lead_assignments),
                 )
                 self._create_assignment(
                     run,
                     decision,
                     ordinal=len(lead_assignments) + 1,
-                    agent_id=reviewer.agent_id,
+                    agent_id=decision.agent_ids[0],
                 )
                 self._phase(run, TeamRunPhase.REVIEWING, turn=3)
                 continue
@@ -449,21 +514,67 @@ class TeamCoordinatorActor:
                 lead = self._assignment_by_role(run_id, "execute")
                 deliverable = self._read_text(lead.contribution_ref)
                 review_text = self._read_text(review.contribution_ref)
-                decision = CoordinatorDecision(
-                    CoordinatorAction.REVISE,
-                    (lead.agent_id,),
+                run = self.projection().runs[run_id]
+                decide_next = getattr(self._decide, "decide_next", None)
+                decision = (
+                    decide_next(
+                        run,
+                        targets,
+                        (
+                            f"任务：{task}\n\n初稿：{deliverable[:4_000]}"
+                            f"\n\n独立评审：{review_text[:4_000]}"
+                        ),
+                        frozenset(
+                            {
+                                CoordinatorAction.REVISE,
+                                CoordinatorAction.COMPLETE,
+                                CoordinatorAction.BLOCK,
+                            }
+                        ),
+                    )
+                    if callable(decide_next)
+                    else CoordinatorDecision(
+                        CoordinatorAction.REVISE,
+                        (lead.agent_id,),
+                        role="finalize",
+                        instruction=(
+                            "根据独立评审修订并只输出最终交付。\n\n"
+                            f"任务：{task}\n\n初稿：{deliverable[:4_000]}\n\n评审：{review_text[:4_000]}"
+                        ),
+                        depends_on=(lead.assignment_id, review.assignment_id),
+                    )
+                )
+                if decision.action is CoordinatorAction.BLOCK:
+                    self._block(run_id, decision.reason_code)
+                    return
+                if decision.action is CoordinatorAction.COMPLETE:
+                    done_checks = self._validated_done_checks(
+                        run,
+                        decision,
+                        deliverable=deliverable,
+                        review_completed=True,
+                    )
+                    if done_checks is None:
+                        self._block(run_id, "done_criteria_unsatisfied")
+                        return
+                    self._finalize(
+                        run,
+                        lead.contribution_ref,
+                        deliverable,
+                        done_checks=done_checks,
+                    )
+                    return
+                self._validate_round_assignment(
+                    decision,
+                    targets,
+                    action=CoordinatorAction.REVISE,
                     role="finalize",
-                    instruction=(
-                        "根据独立评审修订并只输出最终交付。\n\n"
-                        f"任务：{task}\n\n初稿：{deliverable[:4_000]}\n\n评审：{review_text[:4_000]}"
-                    ),
-                    depends_on=(lead.assignment_id, review.assignment_id),
                 )
                 self._create_assignment(
                     run,
                     decision,
                     ordinal=len(run.assignment_ids) + 1,
-                    agent_id=lead.agent_id,
+                    agent_id=decision.agent_ids[0],
                 )
                 self._phase(run, TeamRunPhase.REVISING, turn=4, handoff=1)
                 continue
@@ -475,15 +586,48 @@ class TeamCoordinatorActor:
                 self._block(run_id, final.error_code or "team_revision_failed")
                 return
             output = self._read_text(final.contribution_ref)
-            CoordinatorDecision(
-                CoordinatorAction.COMPLETE,
-                done_checks={
-                    "deliverable_non_empty": bool(output.strip()),
-                    "review_completed": self._assignment_by_role(run_id, "review").status
-                    is TeamAssignmentStatus.COMPLETED,
-                },
+            run = self.projection().runs[run_id]
+            decide_next = getattr(self._decide, "decide_next", None)
+            decision = (
+                decide_next(
+                    run,
+                    targets,
+                    f"任务：{task}\n\n最终修订：{output[:4_000]}",
+                    frozenset(
+                        {CoordinatorAction.COMPLETE, CoordinatorAction.BLOCK}
+                    ),
+                )
+                if callable(decide_next)
+                else CoordinatorDecision(
+                    CoordinatorAction.COMPLETE,
+                    done_checks={
+                        criterion: True for criterion in run.done_criteria
+                    },
+                )
             )
-            self._finalize(run, final.contribution_ref, output)
+            if decision.action is CoordinatorAction.BLOCK:
+                self._block(run_id, decision.reason_code)
+                return
+            if decision.action is not CoordinatorAction.COMPLETE:
+                raise TeamCoordinatorError("coordinator completion decision is invalid")
+            done_checks = self._validated_done_checks(
+                run,
+                decision,
+                deliverable=output,
+                review_completed=(
+                    self._assignment_by_role(run_id, "review").status
+                    is TeamAssignmentStatus.COMPLETED
+                ),
+            )
+            if done_checks is None:
+                self._block(run_id, "done_criteria_unsatisfied")
+                return
+            self._finalize(
+                run,
+                final.contribution_ref,
+                output,
+                done_checks=done_checks,
+            )
             return
 
     def _create_assignment(
@@ -600,6 +744,29 @@ class TeamCoordinatorActor:
                 },
             )
         )
+        publish_collaboration = getattr(
+            self._backend,
+            "publish_collaboration",
+            None,
+        )
+        if callable(publish_collaboration):
+            causal_event_id = publish_collaboration(
+                tenant_key=run.tenant_key,
+                chat_id=run.chat_id,
+                agent_id=assignment.agent_id,
+                team_run_id=run.run_id,
+                assignment_id=assignment.assignment_id,
+                acceptance_id=assignment.acceptance_id,
+            )
+            if isinstance(causal_event_id, str) and causal_event_id:
+                self.record_collaboration_event(
+                    tenant_key=run.tenant_key,
+                    chat_id=run.chat_id,
+                    agent_id=assignment.agent_id,
+                    team_run_id=run.run_id,
+                    assignment_id=assignment.assignment_id,
+                    causal_event_id=causal_event_id,
+                )
         return True
 
     def _assignment_failed(self, assignment, error_code: str) -> None:
@@ -611,7 +778,14 @@ class TeamCoordinatorActor:
             )
         )
 
-    def _finalize(self, run: TeamRunV2, result_ref: BlobRef, output: str) -> None:
+    def _finalize(
+        self,
+        run: TeamRunV2,
+        result_ref: BlobRef,
+        output: str,
+        *,
+        done_checks: dict[str, bool],
+    ) -> None:
         aggregate = f"{run.run_id}:notify"
         projection = self.projection()
         notify_state = projection.effects.get((aggregate, "notify"))
@@ -627,7 +801,11 @@ class TeamCoordinatorActor:
             JournalEvent(
                 event_type="team.v2.run.completed",
                 aggregate_id=run.run_id,
-                payload={"run_id": run.run_id, "result_ref": result_ref.to_dict()},
+                payload={
+                    "run_id": run.run_id,
+                    "result_ref": result_ref.to_dict(),
+                    "done_checks": done_checks,
+                },
             )
         )
 
@@ -757,6 +935,40 @@ class TeamCoordinatorActor:
             raise TeamCoordinatorError("coordinator planning decision is invalid")
         if not set(decision.agent_ids) <= active_ids:
             raise TeamCoordinatorError("coordinator selected an unavailable employee")
+
+    @staticmethod
+    def _validate_round_assignment(
+        decision: CoordinatorDecision,
+        targets: tuple[object, ...],
+        *,
+        action: CoordinatorAction,
+        role: str,
+    ) -> None:
+        active_ids = {item.agent_id for item in targets}
+        if decision.action is not action or decision.role != role:
+            raise TeamCoordinatorError("coordinator round decision is invalid")
+        if len(decision.agent_ids) != 1 or not set(decision.agent_ids) <= active_ids:
+            raise TeamCoordinatorError("coordinator selected an unavailable employee")
+
+    @staticmethod
+    def _validated_done_checks(
+        run: TeamRunV2,
+        decision: CoordinatorDecision,
+        *,
+        deliverable: str,
+        review_completed: bool,
+    ) -> dict[str, bool] | None:
+        evidence = {
+            "deliverable_non_empty": bool(deliverable.strip()),
+            "review_completed": review_completed,
+            "review": review_completed,
+        }
+        checks = dict(decision.done_checks)
+        if set(checks) != set(run.done_criteria):
+            return None
+        if any(not evidence.get(criterion, False) for criterion in run.done_criteria):
+            return None
+        return checks if checks and all(checks.values()) else None
 
     def _effect(self, aggregate: str, effect_type: str, state: str) -> None:
         self._commit(

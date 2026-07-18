@@ -286,6 +286,105 @@ def test_autonomous_collaboration_keeps_explicit_mention_on_direct_route():
     engine.add_task.assert_not_called()
 
 
+def test_multiple_visible_employee_mentions_start_one_team_run() -> None:
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler.ctx.employee_team_service.start_task.return_value = MagicMock(
+        run_id="teamrun_mentions"
+    )
+    alpha = MagicMock(
+        agent_id="agt_alpha",
+        name="Alpha",
+        role="coder",
+        capabilities=("coding",),
+        member_groups=("oc_team",),
+    )
+    beta = MagicMock(
+        agent_id="agt_beta",
+        name="Beta",
+        role="reviewer",
+        capabilities=("review",),
+        member_groups=("oc_team",),
+    )
+    membership = MagicMock()
+    employees = {"Alpha": alpha, "Beta": beta}
+    membership.find_employee_by_name.side_effect = (
+        lambda _tenant_key, name: employees.get(name)
+    )
+    membership.is_degraded.return_value = False
+    handler.ctx.employee_membership_service = membership
+
+    with patch(
+        "src.thread.manager.get_current_tenant_key",
+        return_value="tenant_1",
+    ), patch(
+        "src.thread.manager.get_current_sender_id",
+        return_value="ou_user",
+    ):
+        handler.handle_message(
+            "om_mentions",
+            "oc_team",
+            "@Alpha @Beta 一起评审这个实现",
+            None,
+        )
+
+    handler.ctx.employee_team_service.dispatch_direct.assert_not_called()
+    handler.ctx.employee_team_service.start_task.assert_called_once_with(
+        tenant_key="tenant_1",
+        message_id="om_mentions",
+        chat_id="oc_team",
+        requester_principal_id="ou_user",
+        task="@Alpha @Beta 一起评审这个实现",
+    )
+    handler._execute_routed_message.assert_not_called()
+
+
+def test_structured_visible_employee_mention_supports_spaces_in_display_name() -> None:
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    employee = MagicMock(
+        agent_id="agt_alice",
+        name="Alice Reviewer",
+        role="reviewer",
+        capabilities=("review",),
+        member_groups=("oc_team",),
+    )
+    membership = MagicMock()
+    membership.find_employee_by_name.side_effect = (
+        lambda _tenant_key, name: employee if name == "Alice Reviewer" else None
+    )
+    membership.is_degraded.return_value = False
+    handler.ctx.employee_membership_service = membership
+
+    with patch(
+        "src.thread.manager.get_current_tenant_key",
+        return_value="tenant_1",
+    ), patch(
+        "src.thread.manager.get_current_sender_id",
+        return_value="ou_user",
+    ), patch(
+        "src.thread.manager.get_current_mentioned_names",
+        return_value=("Alice Reviewer",),
+    ):
+        handler.handle_message(
+            "om_structured_mention",
+            "oc_team",
+            "_at_1 请评审这个实现",
+            None,
+        )
+
+    handler.ctx.employee_team_service.dispatch_direct.assert_called_once()
+    target = handler.ctx.employee_team_service.dispatch_direct.call_args.kwargs[
+        "target"
+    ]
+    assert target.agent_id == "agt_alice"
+    handler.ctx.employee_team_service.start_task.assert_not_called()
+
+
 def test_autonomous_collaboration_does_not_steal_shell_like_text():
     handler = _make_handler()
     engine = _make_engine_for_plan()

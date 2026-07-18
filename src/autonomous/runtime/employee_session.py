@@ -18,6 +18,9 @@ class EmployeeSessionKey:
     backend: str
     model: str
     profile: str
+    effort: str
+    identity_version: int
+    instruction_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +41,7 @@ class EmployeeSessionBootstrap:
         tenant_key: str,
         agent: AgentIdentity,
         project_root: str,
+        identity_version: int,
     ) -> "EmployeeSessionBootstrap":
         project = os.path.realpath(project_root)
         workspace = os.path.realpath(agent.workspace_path)
@@ -47,7 +51,14 @@ class EmployeeSessionBootstrap:
         instruction_bytes = instruction_path.read_bytes()
         if not instruction_bytes or len(instruction_bytes) > 8192:
             raise ValueError("employee bootstrap instruction is invalid")
+        if (
+            isinstance(identity_version, bool)
+            or not isinstance(identity_version, int)
+            or identity_version < 0
+        ):
+            raise ValueError("employee identity version is invalid")
         instruction = instruction_bytes.decode("utf-8")
+        instruction_digest = hashlib.sha256(instruction_bytes).hexdigest()
         employee_root = Path(workspace).parent
         codex_home = os.path.realpath(employee_root / "runtime" / "codex-home")
         writable = (project,) if "file_write" in set(agent.permissions) else ()
@@ -59,12 +70,15 @@ class EmployeeSessionBootstrap:
                 backend=agent.agent_type,
                 model=agent.model_name,
                 profile=agent.model_profile,
+                effort=agent.reasoning_effort,
+                identity_version=identity_version,
+                instruction_digest=instruction_digest,
             ),
             project_root=project,
             workspace_root=workspace,
             codex_home=codex_home,
             instruction_text=instruction,
-            instruction_digest=hashlib.sha256(instruction_bytes).hexdigest(),
+            instruction_digest=instruction_digest,
             read_only_roots=(workspace,),
             writable_roots=writable,
         )

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..domain import EmployeeState
 from .layout import atomic_write_relative, open_child_directory, open_directory_tree
 from .lint import lint_employee_workspace
 from .models import (
@@ -24,9 +25,11 @@ class EmployeeWorkspaceProjector:
         agents_root: str | Path,
         *,
         state_provider: Callable[[], Any] | None = None,
+        source_provider: Callable[[str, str], EmployeeWorkspaceSource] | None = None,
     ) -> None:
         self._root = Path(agents_root).expanduser().absolute()
         self._state_provider = state_provider
+        self._source_provider = source_provider
 
     @property
     def root(self) -> Path:
@@ -73,8 +76,17 @@ class EmployeeWorkspaceProjector:
             raise WorkspaceProjectionError("state provider is unavailable")
         state = self._state_provider()
         employee = state.employees.get(agent_id)
-        if employee is None or employee.tenant_key != tenant_key:
+        if (
+            employee is None
+            or employee.tenant_key != tenant_key
+            or employee.state is EmployeeState.ARCHIVED
+        ):
             raise KeyError(agent_id)
+        if self._source_provider is not None:
+            source = self._source_provider(tenant_key, agent_id)
+            if source.tenant_key != tenant_key or source.agent_id != agent_id:
+                raise WorkspaceProjectionError("workspace source authority mismatch")
+            return self.project(source)
         return self.project(
             EmployeeWorkspaceSource(
                 tenant_key=employee.tenant_key,
@@ -100,6 +112,7 @@ class EmployeeWorkspaceProjector:
         return tuple(
             self.rebuild(employee.tenant_key, agent_id)
             for agent_id, employee in sorted(state.employees.items())
+            if employee.state is not EmployeeState.ARCHIVED
         )
 
     def verify(self, snapshot: EmployeeWorkspaceSnapshot) -> None:

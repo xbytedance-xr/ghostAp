@@ -31,22 +31,31 @@ class _Session:
         self.closed = True
 
 
-def _bootstrap(tmp_path: Path, *, model: str = "m") -> EmployeeSessionBootstrap:
+def _bootstrap(
+    tmp_path: Path,
+    *,
+    model: str = "m",
+    effort: str = "default",
+    identity_version: int = 1,
+    instruction: str = "# Employee\n",
+) -> EmployeeSessionBootstrap:
     workspace = tmp_path / "agent/workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "AGENTS.md").write_text("# Employee\n", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text(instruction, encoding="utf-8")
     return EmployeeSessionBootstrap.from_agent(
         tenant_key="tenant_1",
         agent=AgentIdentity(
             agent_id="agt_1",
             agent_type="codex",
             model_name=model,
+            reasoning_effort=effort,
             workspace_path=str(workspace),
             permissions=["file_read"],
             capabilities=["file_read"],
             security_profile="employee_v1",
         ),
         project_root=str(tmp_path / "project"),
+        identity_version=identity_version,
     )
 
 
@@ -130,4 +139,68 @@ def test_actor_recycles_session_when_key_changes(tmp_path: Path) -> None:
     actor.drain()
     assert len(sessions) == 2
     assert sessions[0].closed is True
+    actor.close()
+
+
+def test_actor_recycles_session_when_instruction_digest_changes(tmp_path: Path) -> None:
+    sessions: list[_Session] = []
+    actor = EmployeeActor(
+        "agt_1",
+        session_factory=lambda _bootstrap: sessions.append(_Session()) or sessions[-1],
+        terminal_sink=lambda _terminal: None,
+    )
+    actor.submit(
+        EmployeeAssignment(
+            "asgn_1",
+            _bootstrap(tmp_path, instruction="# Employee v1\n"),
+            "one",
+            1,
+        )
+    )
+    actor.drain()
+    actor.submit(
+        EmployeeAssignment(
+            "asgn_2",
+            _bootstrap(tmp_path, instruction="# Employee v2\n"),
+            "two",
+            1,
+        )
+    )
+    actor.drain()
+
+    assert len(sessions) == 2
+    assert sessions[0].closed is True
+    actor.close()
+
+
+def test_actor_recycles_session_when_identity_or_effort_changes(tmp_path: Path) -> None:
+    sessions: list[_Session] = []
+    actor = EmployeeActor(
+        "agt_1",
+        session_factory=lambda _bootstrap: sessions.append(_Session()) or sessions[-1],
+        terminal_sink=lambda _terminal: None,
+    )
+    actor.submit(EmployeeAssignment("asgn_1", _bootstrap(tmp_path), "one", 1))
+    actor.drain()
+    actor.submit(
+        EmployeeAssignment(
+            "asgn_2",
+            _bootstrap(tmp_path, identity_version=2),
+            "two",
+            1,
+        )
+    )
+    actor.drain()
+    actor.submit(
+        EmployeeAssignment(
+            "asgn_3",
+            _bootstrap(tmp_path, identity_version=2, effort="high"),
+            "three",
+            1,
+        )
+    )
+    actor.drain()
+
+    assert len(sessions) == 3
+    assert all(session.closed for session in sessions[:2])
     actor.close()

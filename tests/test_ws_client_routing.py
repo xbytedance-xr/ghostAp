@@ -560,6 +560,43 @@ def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     )
 
 
+def test_group_ledger_publication_precedes_programming_mode_dispatch(
+    mock_ws_client: FeishuWSClient,
+) -> None:
+    msg = create_mock_message("implement this")
+    msg.event.message.chat_type = "group"
+    mock_ws_client._validate_message = MagicMock(return_value=True)
+    project = ProjectContext("proj_1", "Test", "/tmp")
+    mock_ws_client._resolve_message_context = MagicMock(
+        return_value=(project, "coco")
+    )
+    mock_coco_handler = MagicMock()
+    mock_ws_client._get_mode_handler = MagicMock(return_value=mock_coco_handler)
+    runtime = MagicMock()
+    mock_ws_client._employee_department_runtime = runtime
+    task_ctx = SimpleNamespace(
+        run_id="run_group_ledger",
+        spec=SimpleNamespace(
+            sender_id="ou_user",
+            sender_union_id="on_user",
+            is_p2p=False,
+            tenant_key="tenant_1",
+        )
+    )
+
+    mock_ws_client._process_message_async(msg, task_ctx=task_ctx)
+
+    runtime.record_group_event.assert_called_once_with(
+        tenant_key="tenant_1",
+        chat_id="chat_456",
+        thread_id="",
+        message_id="msg_123",
+        sender_id="ou_user",
+        text="implement this",
+    )
+    mock_coco_handler.handle_message.assert_called_once()
+
+
 def test_flat_post_engine_command_reaches_dispatch_with_command_and_image(
     mock_ws_client: FeishuWSClient,
 ):

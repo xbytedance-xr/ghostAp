@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -15,6 +16,7 @@ from ..acp.models import ACPEvent, ACPEventType, PromptResult
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from ..utils.retry import RetryPolicy, prompt_with_retry
+from .employee_cli_sandbox import EmployeeCLISandbox
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +38,23 @@ class SyncClaudeCLISession:
     - Emits TEXT_CHUNK ACP events only (no plan/tool events).
     """
 
-    def __init__(self, cwd: str, config: Optional[ClaudeCLIConfig] = None):
+    def __init__(
+        self,
+        cwd: str,
+        config: Optional[ClaudeCLIConfig] = None,
+        *,
+        employee_process_env: Mapping[str, str] | None = None,
+    ):
         self._cwd = cwd
         self._cfg = config or ClaudeCLIConfig()
         self._proc: Optional[subprocess.Popen] = None
         self._cancel_event = threading.Event()
+        self._tool_filter = None
+        self._employee_sandbox = (
+            EmployeeCLISandbox(cwd=cwd, process_env=employee_process_env)
+            if employee_process_env is not None
+            else None
+        )
 
         self.session_id: str = ""
         self.created_at: float = time.time()
@@ -80,6 +94,31 @@ class SyncClaudeCLISession:
     def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
         return True
 
+    @property
+    def employee_process_env(self) -> dict[str, str] | None:
+        sandbox = self._employee_sandbox
+        return None if sandbox is None else sandbox.process_env
+
+    def set_tool_filter(self, tool_filter) -> None:
+        self._tool_filter = tool_filter
+
+    def get_tool_filter(self):
+        return self._tool_filter
+
+    def configure_employee_sandbox(
+        self,
+        *,
+        read_only_roots: Sequence[str],
+        writable_roots: Sequence[str],
+    ) -> None:
+        if self._employee_sandbox is None:
+            raise RuntimeError("employee CLI environment is unavailable")
+        self._employee_sandbox.configure(
+            command=self._cfg.command,
+            read_only_roots=read_only_roots,
+            writable_roots=writable_roots,
+        )
+
     def _resolve_bypass_permissions(self) -> bool:
         """Resolve whether to skip Claude permissions (config > explicit)."""
         if self._cfg.bypass_permissions is not None:
@@ -102,6 +141,8 @@ class SyncClaudeCLISession:
 
         def _build_args(resumed: bool) -> list[str]:
             args: list[str] = [self._cfg.command, "-p"]
+            if self._employee_sandbox is not None:
+                args.append("--bare")
             if self._cfg.add_dir:
                 args += ["--add-dir", self._cwd]
             if self._resolve_bypass_permissions():
@@ -124,8 +165,13 @@ class SyncClaudeCLISession:
                 # Claude Code CLI refuses to launch inside another Claude Code session.
                 # Our process may run under Claude Code / other wrappers, so we must
                 # explicitly unset the guard env to avoid nested-session crash.
-                from ..utils.env import build_clean_env
-                env = build_clean_env()
+                if self._employee_sandbox is not None:
+                    env = self._employee_sandbox.process_env
+                    args = self._employee_sandbox.wrap_argv(args)
+                else:
+                    from ..utils.env import build_clean_env
+
+                    env = build_clean_env()
 
                 self._proc = subprocess.Popen(
                     args,

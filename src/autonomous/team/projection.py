@@ -141,6 +141,13 @@ def _apply_event(
         if run.phase not in {TeamRunPhase.REVIEWING, TeamRunPhase.REVISING}:
             raise TeamProjectionError("TeamRun V2 completion is premature")
         _assert_no_open_effects(effects, run_id)
+        done_checks = payload.get("done_checks")
+        if (
+            not isinstance(done_checks, dict)
+            or set(done_checks) != set(run.done_criteria)
+            or any(type(value) is not bool or value is not True for value in done_checks.values())
+        ):
+            raise TeamProjectionError("team run done criteria are not satisfied")
         runs[run_id] = replace(
             run,
             phase=TeamRunPhase.COMPLETED,

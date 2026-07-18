@@ -56,6 +56,83 @@ def test_coordinator_persists_encrypted_task_and_completes_dynamic_run(tmp_path)
     writer.close()
 
 
+def test_model_coordinator_decides_each_team_round(tmp_path) -> None:
+    class _RoundDecisionProvider:
+        def __init__(self) -> None:
+            self.phases = []
+
+        def __call__(self, run, _targets, task):
+            self.phases.append((run.phase, task))
+            return CoordinatorDecision(
+                CoordinatorAction.ASSIGN,
+                ("agt_coder",),
+                role="execute",
+                instruction="implement with evidence",
+            )
+
+        def decide_next(self, run, _targets, context, allowed_actions):
+            self.phases.append((run.phase, context))
+            if run.phase is TeamRunPhase.DISPATCHING:
+                assert CoordinatorAction.REVIEW in allowed_actions
+                assert tuple(item.agent_id for item in _targets) == ("agt_reviewer",)
+                return CoordinatorDecision(
+                    CoordinatorAction.REVIEW,
+                    ("agt_reviewer",),
+                    role="review",
+                    instruction="independently review",
+                    depends_on=(run.assignment_ids[0],),
+                )
+            if run.phase is TeamRunPhase.REVIEWING:
+                assert CoordinatorAction.REVISE in allowed_actions
+                return CoordinatorDecision(
+                    CoordinatorAction.REVISE,
+                    ("agt_coder",),
+                    role="finalize",
+                    instruction="revise from review",
+                    depends_on=run.assignment_ids,
+                )
+            assert run.phase is TeamRunPhase.REVISING
+            assert CoordinatorAction.COMPLETE in allowed_actions
+            return CoordinatorDecision(
+                CoordinatorAction.COMPLETE,
+                done_checks={
+                    "deliverable_non_empty": True,
+                    "review_completed": True,
+                },
+            )
+
+    provider = _RoundDecisionProvider()
+    backend = ImmediateTeamBackend()
+    writer, blobs = make_team_storage(tmp_path)
+    actor = TeamCoordinatorActor(
+        writer=writer,
+        blob_store=blobs,
+        active_key_id="team-key",
+        backend=backend,
+        poll_seconds=0.001,
+        decision_provider=provider,
+    )
+    run = actor.start_task(
+        tenant_key="tenant_1",
+        message_id="om_rounds",
+        chat_id="oc_team",
+        requester_principal_id="ou_user",
+        task="implement and review",
+    )
+    actor.drain()
+
+    assert actor.projection().runs[run.run_id].phase is TeamRunPhase.COMPLETED
+    assert [phase for phase, _context in provider.phases] == [
+        TeamRunPhase.PLANNING,
+        TeamRunPhase.DISPATCHING,
+        TeamRunPhase.REVIEWING,
+        TeamRunPhase.REVISING,
+    ]
+    actor.close()
+    blobs.close()
+    writer.close()
+
+
 def test_explicit_mention_wins_and_assignment_claim_is_single_winner(tmp_path) -> None:
     backend = ImmediateTeamBackend()
     writer, blobs, actor = _actor(tmp_path, backend)

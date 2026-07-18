@@ -181,6 +181,45 @@ def test_feishu_action_registry_uses_canonical_core_action_ids():
     assert {"deep_", "spec_", "slock_"} <= client.prefix_actions
 
 
+@pytest.mark.parametrize(
+    "action_type",
+    (
+        "employee_runtime_show_status",
+        "employee_runtime_recycle_session",
+        "employee_runtime_rebuild_workspace",
+        "employee_runtime_lint_knowledge",
+        "employee_runtime_retry_review",
+    ),
+)
+def test_employee_runtime_action_dispatches_to_slock_handler(action_type: str) -> None:
+    """Runtime status-card actions must be reachable from the global dispatcher."""
+    from src.feishu.action_dispatcher import ActionDispatcher
+    from src.feishu.action_registry import init_action_registry
+
+    client = _RegistryCaptureClient()
+    client._slock_handler = MagicMock()
+    dispatcher = ActionDispatcher()
+    client._register_action = dispatcher.register
+    init_action_registry(client)
+    value = {"agent_id": "agt_atlas", "review_id": "review_1"}
+
+    handled = dispatcher.dispatch(
+        action_type,
+        "message_1",
+        "chat_1",
+        None,
+        value,
+    )
+
+    assert handled is True
+    client._slock_handler.handle_card_action.assert_called_once_with(
+        "message_1",
+        "chat_1",
+        action_type,
+        value,
+    )
+
+
 def test_select_acp_model_default_option_passes_none_model():
     from src.feishu.action_registry import init_action_registry
 

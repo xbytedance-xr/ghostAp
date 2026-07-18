@@ -249,8 +249,14 @@ def _runtime_settings(tmp_path: Path, *, captured_at: float) -> SimpleNamespace:
             details["duration_seconds"] = gate.minimum_duration_seconds
         for metric in gate.required_zero_metrics:
             details[metric] = 0
+        for metric, minimum in gate.minimum_metrics:
+            details[metric] = minimum
         for metric, maximum, exclusive in gate.maximum_metrics:
             details[metric] = maximum - 0.1 if exclusive else maximum
+        for metric in gate.bounded_growth_metrics:
+            details[f"{metric}_baseline"] = 0
+            details[f"{metric}_peak"] = gate.minimum_bot_count
+            details[f"{metric}_final"] = 0
         checkpoint = bundle.append(
             gate_id=gate.gate_id,
             environment=gate.environment,

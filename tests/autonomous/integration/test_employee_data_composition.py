@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import secrets
 import threading
@@ -23,6 +24,11 @@ from src.autonomous.data.ports import (
 from src.autonomous.data.query import AuthenticatedDataRequest, HistoryQuerySpec
 from src.autonomous.data.service import DataWriteDisabledError
 from src.autonomous.journal.writer import JournalWriter
+from tests.autonomous.workforce_helpers import (
+    commit_events,
+    employee_created,
+    replay_state,
+)
 
 
 class _InMemoryAnchor:
@@ -77,6 +83,78 @@ def composition(tmp_path: Path) -> EmployeeDataComposition:
 
 
 class TestFullComposition:
+    def test_workspace_rebuild_joins_workforce_and_knowledge_projection(
+        self,
+        composition: EmployeeDataComposition,
+    ) -> None:
+        writer = composition.service._writer
+        workforce = replay_state(writer)
+        commit_events(
+            writer,
+            workforce,
+            employee_created("agt_alpha", "Alpha"),
+        )
+        for generation in (1, 2):
+            composition.publish_document(
+                PublishEmployeeDocumentCommand(
+                    agent_id="agt_alpha",
+                    tenant_key="tenant_1",
+                    owner_principal_id="principal_owner",
+                    kind=DataKind.KNOWLEDGE_INDEX,
+                    source_id=DataKind.KNOWLEDGE_INDEX.value,
+                    content=f"# Knowledge index {generation}".encode(),
+                    content_type="text/markdown",
+                    idempotency_key=f"knowledge-index-{generation}",
+                )
+            )
+
+        snapshot = composition.workspace_projector.rebuild(
+            "tenant_1",
+            "agt_alpha",
+        )
+
+        assert snapshot.knowledge_generation == 2
+        now = (
+            composition.workspace_projector.root
+            / "agt_alpha/workspace/NOW.md"
+        ).read_text(encoding="utf-8")
+        assert "Knowledge generation: 2" in now
+
+    def test_workspace_source_manifest_contains_only_latest_page_version(
+        self,
+        composition: EmployeeDataComposition,
+    ) -> None:
+        writer = composition.service._writer
+        workforce = replay_state(writer)
+        commit_events(
+            writer,
+            workforce,
+            employee_created("agt_alpha", "Alpha"),
+        )
+        contents = (b"# Old page", b"# Current page")
+        for version, content in enumerate(contents, start=1):
+            composition.publish_document(
+                PublishEmployeeDocumentCommand(
+                    agent_id="agt_alpha",
+                    tenant_key="tenant_1",
+                    owner_principal_id="principal_owner",
+                    kind=DataKind.KNOWLEDGE_PAGE,
+                    source_id="stable_page",
+                    content=content,
+                    content_type="text/markdown",
+                    idempotency_key=f"stable-page-{version}",
+                )
+            )
+
+        composition.workspace_projector.rebuild("tenant_1", "agt_alpha")
+
+        manifest = (
+            composition.workspace_projector.root
+            / "agt_alpha/workspace/sources/manifest.yaml"
+        ).read_text(encoding="utf-8")
+        assert hashlib.sha256(contents[1]).hexdigest() in manifest
+        assert hashlib.sha256(contents[0]).hexdigest() not in manifest
+
     def test_production_composition_has_independent_canonical_authority(
         self,
         composition: EmployeeDataComposition,

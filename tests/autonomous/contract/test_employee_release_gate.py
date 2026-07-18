@@ -46,6 +46,7 @@ EXPECTED_GATE_IDS = {
     "EMP-CONTEXT-TRIMMING",
     "EMP-CONTEXT-ZERO-DISPATCH",
     "EMP-CONTEXT-IDENTITY-ISOLATION",
+    "EMP-RUNTIME-AUTHORITY-ISOLATION",
     "EMP-MEDIA-CARD-ACTION",
     "EMP-SECRET-SCAN-STAGING",
     "EMP-SECRET-SCAN-PRODUCTION",
@@ -135,6 +136,14 @@ def _passing_details(gate_id: str) -> dict[str, object]:
                 "uncaught_exceptions": 0,
                 "terminal_overwrites": 0,
                 "abnormal_reconnects_per_bot_hour": 0.0,
+                "reconnect_cycle_count": 1,
+                "restart_cycle_count": 1,
+                "session_count_baseline": bot_count,
+                "session_count_peak": bot_count,
+                "session_count_final": bot_count,
+                "process_count_baseline": bot_count,
+                "process_count_peak": bot_count,
+                "process_count_final": bot_count,
             }
         )
         if bot_count == 50:
@@ -246,6 +255,69 @@ def test_employee_manifest_requires_specific_real_tenant_observations(
         "manager_bot_api_calls_zero",
         "main_bot_send_count_zero",
     } <= assertions["EMP-CONTEXT-IDENTITY-ISOLATION"]
+    assert {
+        "observed_on_real_tenant",
+        "peer_workspace_read_denied",
+        "vault_read_denied",
+        "journal_read_denied",
+        "control_projection_write_denied",
+        "authority_unchanged_after_probe",
+    } == assertions["EMP-RUNTIME-AUTHORITY-ISOLATION"]
+
+
+def test_soak_gates_require_cycles_and_bound_session_and_process_growth(
+    manifest: EmployeeReleaseManifest,
+) -> None:
+    for gate in manifest.gates:
+        if not gate.gate_id.startswith("EMP-SOAK-"):
+            continue
+        assert dict(gate.minimum_metrics) == {
+            "reconnect_cycle_count": 1.0,
+            "restart_cycle_count": 1.0,
+        }
+        assert gate.bounded_growth_metrics == ("process_count", "session_count")
+
+
+@pytest.mark.parametrize(
+    ("metric", "suffix"),
+    [
+        ("session_count", "peak"),
+        ("session_count", "final"),
+        ("process_count", "peak"),
+        ("process_count", "final"),
+    ],
+)
+def test_soak_resource_growth_above_one_per_bot_never_passes(
+    tmp_path: Path,
+    manifest: EmployeeReleaseManifest,
+    binding: EmployeeEnvironmentBinding,
+    metric: str,
+    suffix: str,
+) -> None:
+    gate = next(item for item in manifest.gates if item.gate_id == "EMP-SOAK-10")
+    details = _passing_details(gate.gate_id)
+    details[f"{metric}_{suffix}"] = 21
+    bundle = EmployeeEvidenceBundle(tmp_path / "evidence.jsonl")
+    checkpoint = bundle.append(
+        gate_id=gate.gate_id,
+        environment=gate.environment,
+        tenant_hash=binding.tenant_hash_for(gate.environment),
+        status=EmployeeEvidenceStatus.PASSED,
+        details=details,
+        binding=binding,
+        captured_at=1_000_000,
+        attestor="tenant-qa@example.invalid",
+    )
+
+    evaluation = evaluate_employee_release(
+        manifest=manifest,
+        bundle=bundle,
+        binding=binding,
+        now=1_000_001,
+        checkpoint=checkpoint,
+    )
+
+    assert gate.gate_id not in evaluation.passed
 
 
 def test_missing_acceptance_evidence_does_not_disable_built_in_employees(
@@ -591,10 +663,13 @@ def test_cli_writes_bound_fail_closed_live_capture_template(
     )
 
     payload = json.loads(result.stdout)
-    capture = json.loads(template.read_text(encoding="utf-8"))
+    envelope = json.loads(template.read_text(encoding="utf-8"))
+    capture = envelope["records"]
     assert result.returncode == 0
     assert payload["status"] == "template_created"
     assert template.stat().st_mode & 0o777 == 0o600
+    assert envelope["schema_version"] == 1
+    assert envelope["binding"] == binding.to_dict()
     assert [item["gate_id"] for item in capture] == [gate.gate_id for gate in manifest.gates]
     assert all(item["status"] == "pending" for item in capture)
     assert all(item["captured_at"] == 0 for item in capture)
@@ -624,8 +699,11 @@ def test_live_capture_is_validated_as_a_batch_before_any_append(
     capture = tmp_path / "capture.json"
     capture.write_text(
         json.dumps(
-            [
-                {
+            {
+                "schema_version": 1,
+                "binding": binding.to_dict(),
+                "records": [
+                    {
                     "gate_id": first_gate.gate_id,
                     "status": "passed",
                     "details": _passing_details(first_gate.gate_id),
@@ -633,8 +711,8 @@ def test_live_capture_is_validated_as_a_batch_before_any_append(
                     "environment": first_gate.environment,
                     "tenant_hash": binding.tenant_hash_for(first_gate.environment),
                     "attestor": "tenant-qa@example.invalid",
-                },
-                {
+                    },
+                    {
                     "gate_id": second_gate.gate_id,
                     "status": "passed",
                     "details": {"app_secret": "must-not-be-appended"},
@@ -642,14 +720,73 @@ def test_live_capture_is_validated_as_a_batch_before_any_append(
                     "environment": second_gate.environment,
                     "tenant_hash": binding.tenant_hash_for(second_gate.environment),
                     "attestor": "tenant-qa@example.invalid",
-                },
-            ]
+                    },
+                ],
+            }
         ),
         encoding="utf-8",
     )
     bundle = EmployeeEvidenceBundle(tmp_path / "evidence.jsonl")
 
     with pytest.raises(ValueError, match="secret-bearing evidence is forbidden"):
+        module._ingest_live_capture(
+            path=capture,
+            manifest=manifest,
+            bundle=bundle,
+            binding=binding,
+        )
+
+    assert bundle.load_verified() == ()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    [
+        ("release_id", "release-2026-07-13-forged"),
+        ("commit_sha", "d" * 40),
+        ("service_instance_id", "ghostap-prod-forged"),
+    ],
+)
+def test_live_capture_cannot_be_rebound_to_another_deployment(
+    tmp_path: Path,
+    manifest: EmployeeReleaseManifest,
+    binding: EmployeeEnvironmentBinding,
+    field_name: str,
+    replacement: str,
+) -> None:
+    script_path = Path("scripts/validate_employee_tenant.py")
+    spec = importlib.util.spec_from_file_location("validate_employee_tenant", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    captured_binding = binding.to_dict()
+    captured_binding[field_name] = replacement
+    capture = tmp_path / "capture.json"
+    capture.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "binding": captured_binding,
+                "records": [
+                    {
+                        "gate_id": manifest.gates[0].gate_id,
+                        "status": "pending",
+                        "details": {"assertions": {}},
+                        "captured_at": 0,
+                        "environment": manifest.gates[0].environment,
+                        "tenant_hash": binding.tenant_hash_for(
+                            manifest.gates[0].environment
+                        ),
+                        "attestor": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = EmployeeEvidenceBundle(tmp_path / "evidence.jsonl")
+
+    with pytest.raises(ValueError, match="capture binding"):
         module._ingest_live_capture(
             path=capture,
             manifest=manifest,
