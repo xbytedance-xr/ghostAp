@@ -484,6 +484,32 @@ def test_system_message_is_marked_as_untrusted_system_history() -> None:
     assert page.messages[0].is_system is True
 
 
+def test_official_system_message_without_sender_uses_scoped_system_identity() -> None:
+    system = _message(
+        "om_system",
+        msg_type="system",
+        content={"template": "member joined"},
+    )
+    system.sender = SimpleNamespace(
+        id="",
+        id_type="",
+        sender_type="",
+        tenant_key="",
+    )
+    source, _, _, _ = _open_source(list_responses=[_Response(items=[system])])
+
+    with source:
+        source.resolve_thread()
+        page = source.list_thread_messages()
+
+    message = page.messages[0]
+    assert message.is_system is True
+    assert message.sender_id == "lark_system"
+    assert message.sender_id_type == "system"
+    assert message.sender_type == "system"
+    assert message.sender_tenant_key == "tenant_1"
+
+
 def test_post_preserves_text_but_removes_nested_resource_keys() -> None:
     post = _message(
         "om_post",

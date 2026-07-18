@@ -2014,7 +2014,7 @@ def test_direct_ordering_failure_uses_canonical_partial_and_continues(
             causal_event_id,
         ):
             assert warning_reason is ContextUnavailableReason.ORDERING
-            assert causal_event_id.startswith("direct:")
+            assert causal_event_id == ""
             return dataclass_replace(
                 complete_context.assemble(request),
                 quality=ContextQuality.CANONICAL_PARTIAL,

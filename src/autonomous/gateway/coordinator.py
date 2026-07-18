@@ -303,7 +303,7 @@ class EmployeeDispatchCoordinator:
                     causal_event_id = (
                         f"{part['team_run_id']}:{part['team_step_id']}"
                         if is_team_assignment
-                        else f"direct:{grant.record.acceptance_id}"
+                        else ""
                     )
                     snapshot = partial(
                         grant.request,

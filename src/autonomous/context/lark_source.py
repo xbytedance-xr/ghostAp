@@ -414,22 +414,30 @@ def _normalize_message(
         elif root_id != scope.thread_root_message_id:
             raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
 
-    sender = getattr(message, "sender", None)
-    sender_id = _required_string(
-        getattr(sender, "id", None), ContextUnavailableReason.CONTENT
-    )
-    sender_id_type = _required_string(
-        getattr(sender, "id_type", None), ContextUnavailableReason.CONTENT
-    )
-    sender_type = _required_string(
-        getattr(sender, "sender_type", None), ContextUnavailableReason.CONTENT
-    )
-    sender_tenant_key = _required_string(
-        getattr(sender, "tenant_key", None), ContextUnavailableReason.CONTENT
-    )
     msg_type = _required_string(
         getattr(message, "msg_type", None), ContextUnavailableReason.CONTENT
     )
+    sender = getattr(message, "sender", None)
+    raw_sender = (
+        getattr(sender, "id", None),
+        getattr(sender, "id_type", None),
+        getattr(sender, "sender_type", None),
+        getattr(sender, "tenant_key", None),
+    )
+    if msg_type == "system" and all(value is None or value == "" for value in raw_sender):
+        sender_id = "lark_system"
+        sender_id_type = "system"
+        sender_type = "system"
+        sender_tenant_key = scope.tenant_key
+    else:
+        sender_id = _required_string(raw_sender[0], ContextUnavailableReason.CONTENT)
+        sender_id_type = _required_string(
+            raw_sender[1], ContextUnavailableReason.CONTENT
+        )
+        sender_type = _required_string(raw_sender[2], ContextUnavailableReason.CONTENT)
+        sender_tenant_key = _required_string(
+            raw_sender[3], ContextUnavailableReason.CONTENT
+        )
     create_time_ms = _strict_time_ms(getattr(message, "create_time", None))
     update_time_ms = _strict_time_ms(getattr(message, "update_time", None))
     if update_time_ms < create_time_ms:
