@@ -48,7 +48,7 @@ class EmployeeRuntimeSupervisor:
         self._assignment_owner: dict[str, str] = {}
         self._terminals: dict[str, EmployeeAssignmentTerminal] = {}
         self._conditions: dict[str, threading.Event] = {}
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
         self._retired: set[str] = set()
 

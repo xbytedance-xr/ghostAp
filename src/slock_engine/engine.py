@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 _SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
 _SHARED_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-_LEGACY_EMPLOYEE_METRIC_INIT_LOCK = threading.Lock()
+_LEGACY_EMPLOYEE_METRIC_INIT_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 class _EmployeeSessionLease:
@@ -400,7 +400,7 @@ class SlockEngine(BaseEngine):
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._agent_sessions: dict[str, object] = {}
         self._legacy_employee_session_calls = 0
-        self._legacy_employee_session_calls_lock = threading.Lock()
+        self._legacy_employee_session_calls_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._agent_execution_errors: dict[str, str] = {}
         self._escalations: list[EscalationRequest] = []
         self._escalation_retry_counts: dict[str, int] = {}
@@ -1590,7 +1590,7 @@ class SlockEngine(BaseEngine):
             with _LEGACY_EMPLOYEE_METRIC_INIT_LOCK:
                 if not hasattr(self, "_legacy_employee_session_calls_lock"):
                     self._legacy_employee_session_calls = 0
-                    self._legacy_employee_session_calls_lock = threading.Lock()
+                    self._legacy_employee_session_calls_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
                 lock = self._legacy_employee_session_calls_lock
         with lock:
             self._legacy_employee_session_calls += 1

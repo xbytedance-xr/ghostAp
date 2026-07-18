@@ -114,7 +114,7 @@ class GroupContextLedger:
         self._config = config or ThreadContextConfig()
         self._blob_retainer = blob_retainer
         self._blob_releaser = blob_releaser
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._records: dict[str, GroupEventRecord] = {}
         self.rebuild_projection()
 

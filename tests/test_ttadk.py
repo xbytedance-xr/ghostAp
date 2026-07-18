@@ -516,11 +516,18 @@ def test_ttadk_startup_summary_log_fields_success(monkeypatch, caplog):
     )
 
     class _FakeCLISession:
-        def __init__(self, agent_type: str, cwd: str, model_name=None):
+        def __init__(
+            self,
+            agent_type: str,
+            cwd: str,
+            model_name=None,
+            employee_process_env=None,
+        ):
             self.session_id = ""
             self._agent_type = agent_type
             self._cwd = cwd
             self._model_name = model_name
+            self._employee_process_env = employee_process_env
 
         def start(self, startup_timeout: float = 60):
             self.session_id = "sid"
@@ -563,7 +570,13 @@ def test_ttadk_startup_summary_log_fields_degraded(monkeypatch, caplog):
     )
 
     class _FakeFailCLISession:
-        def __init__(self, agent_type: str, cwd: str, model_name=None):
+        def __init__(
+            self,
+            agent_type: str,
+            cwd: str,
+            model_name=None,
+            employee_process_env=None,
+        ):
             self.session_id = ""
 
         def start(self, startup_timeout: float = 60):
@@ -1119,8 +1132,21 @@ def test_agent_session_ttadk_precheck_uses_real_model_when_valid(monkeypatch):
     )
 
     class _DummyCLISession:
-        def __init__(self, agent_type: str, cwd: str, model_name=None):
-            calls.append({"agent_type": agent_type, "cwd": cwd, "model_name": model_name})
+        def __init__(
+            self,
+            agent_type: str,
+            cwd: str,
+            model_name=None,
+            employee_process_env=None,
+        ):
+            calls.append(
+                {
+                    "agent_type": agent_type,
+                    "cwd": cwd,
+                    "model_name": model_name,
+                    "employee_process_env": employee_process_env,
+                }
+            )
             self.session_id = ""
 
         def start(self, startup_timeout: float = 60):

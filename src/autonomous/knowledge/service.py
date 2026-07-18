@@ -56,7 +56,7 @@ class EmployeeKnowledgeService:
         )
         self._agents_root = Path(agents_root) if agents_root is not None else None
         self._queue: queue.Queue[str | None] = queue.Queue()
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._known: set[str] = set()
         self._sources: dict[str, dict[str, str]] = {}
         self._terminal: set[str] = set()

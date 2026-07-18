@@ -335,11 +335,13 @@ class ACPSession:
                 return False
             if not self._conn:
                 return False
-            # Use a stable roundtrip request. `session/load` should be supported by agents.
             if not self._session_id:
                 return False
+            # Use a non-mutating roundtrip request. Reloading the active session
+            # is not a health check: some agents reject it, while others may
+            # reset session-local configuration or context.
             await safe_wait_for(
-                self._conn.load_session(cwd=self._cwd, session_id=self._session_id),
+                self._conn.list_sessions(cwd=self._cwd),
                 timeout=timeout,
                 action="ACP 健康检查",
             )

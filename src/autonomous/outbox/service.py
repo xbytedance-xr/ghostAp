@@ -475,6 +475,7 @@ class EmployeeOutboxService:
         with self._mutex, self._writer.transaction_guard():
             self._ensure_open_unlocked()
             self._synchronize_projection_unlocked()
+            present_blob_ids = set(self._blob_store.iter_blob_ids())
             collected = 0
             for outbox_id, record in tuple(self._state.by_outbox_id.items()):
                 if (
@@ -507,10 +508,14 @@ class EmployeeOutboxService:
                                 },
                             ),
                         )
+                    blob_id = metadata.blob_ref.blob_id
+                    if blob_id not in present_blob_ids:
+                        continue
                     try:
-                        self._blob_store.quarantine_blob(metadata.blob_ref.blob_id)
+                        self._blob_store.quarantine_blob(blob_id)
                     except BlobError:
                         continue
+                    present_blob_ids.discard(blob_id)
                     collected += 1
             return collected
 

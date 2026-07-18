@@ -617,6 +617,9 @@ def test_flat_post_engine_command_reaches_dispatch_with_command_and_image(
     mock_ws_client._get_image_handler = MagicMock(return_value=image_handler)
     mock_ws_client._validate_message = MagicMock(return_value=True)
     mock_ws_client._resolve_message_context = MagicMock(return_value=(project, "traex"))
+    mock_ws_client._employee_department_runtime.record_group_event = MagicMock(
+        return_value=True
+    )
     mock_ws_client._dispatch_message_logic = MagicMock()
 
     mock_ws_client._process_message_async(msg)
@@ -652,6 +655,9 @@ def test_flat_post_worktree_command_preserves_downloaded_image_in_goal(
     mock_ws_client._get_image_handler = MagicMock(return_value=image_handler)
     mock_ws_client._validate_message = MagicMock(return_value=True)
     mock_ws_client._resolve_message_context = MagicMock(return_value=(project, "traex"))
+    mock_ws_client._employee_department_runtime.record_group_event = MagicMock(
+        return_value=True
+    )
     mock_ws_client._worktree_handler.handle_worktree_command_match = MagicMock()
 
     mock_ws_client._process_message_async(msg)

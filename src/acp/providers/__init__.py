@@ -208,28 +208,18 @@ class TraexACPProvider(GenericACPProvider):
         except Exception:
             return {}
 
-    # Reasoning/profile suffix tokens that Traex's UI-side cascade may append to
-    # a model value as "config_name/<profile>/<effort>" (e.g. "c_o_new_thinking/max/max").
-    # Traex's CLI metadata lookup only recognises the base config_name/slug, so a
-    # compound value is passed through verbatim to `-c model=` and fails with
-    # "Model metadata for <compound> not found" → Internal error. Strip these
-    # trailing tokens before slug resolution.
-    _VARIANT_SUFFIX_TOKENS = frozenset({"low", "medium", "high", "xhigh", "max"})
-
     @classmethod
     def _strip_variant_suffix(cls, model_name: str) -> str:
         """Reduce "config_name/<profile>/<effort>" to the base config_name.
 
-        Only trailing segments that are known reasoning/profile tokens are
-        removed, so ordinary slash-bearing names (e.g. "anthropic/claude-sonnet")
-        are preserved intact.
+        Reuse the same parser as runtime application so startup normalization
+        cannot drift from ACP session selection. Ordinary slash-bearing names
+        (for example ``anthropic/claude-sonnet``) remain intact.
         """
-        parts = [p for p in str(model_name or "").split("/") if p]
-        if len(parts) <= 1:
-            return str(model_name or "").strip()
-        while len(parts) > 1 and parts[-1].lower() in cls._VARIANT_SUFFIX_TOKENS:
-            parts.pop()
-        return "/".join(parts)
+        from ..traex_selection import split_traex_model_selection
+
+        base, _profile, _effort = split_traex_model_selection(model_name)
+        return base
 
     def normalize_model_name(self, model_name: Optional[str] = None) -> Optional[str]:
         """Resolve config_name to slug if a mapping exists.

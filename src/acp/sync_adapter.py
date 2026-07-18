@@ -982,7 +982,14 @@ def resolve_agent_spec(
         except (OSError, RuntimeError):
             logger.debug("resolve_agent_spec: preheat_async failed", exc_info=True)
 
-        return tool_registry.get_serve_command(agent_type, model_name)
+        # Traex model/profile/effort is one ACP config cascade. Starting the
+        # process with a partially normalized CLI model and then applying the
+        # full selection again after ``new_session`` creates two authorities
+        # that can disagree (for example ``model/standard`` rejects a later
+        # reasoning_effort). Start model-neutral; ``_apply_traex_selection`` is
+        # the single runtime selection boundary.
+        startup_model = None if agent_type == "traex" else model_name
+        return tool_registry.get_serve_command(agent_type, startup_model)
     except Exception as e:
         raise RuntimeError(
             f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides. Details: {get_error_detail(e)}"

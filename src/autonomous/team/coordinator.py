@@ -53,7 +53,7 @@ class SessionCoordinatorDecisionProvider:
         self._effort = effort
         self._cwd = cwd_resolver
         self._timeout = timeout_seconds
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._sessions: dict[str, object] = {}
 
     def __call__(
@@ -197,7 +197,7 @@ class TeamCoordinatorActor:
         self._poll = float(poll_seconds)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._decide = decision_provider
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="team-coordinator")
         self._active: set[str] = set()
         self._closed = False

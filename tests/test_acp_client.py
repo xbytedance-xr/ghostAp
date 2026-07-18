@@ -208,6 +208,35 @@ def test_acp_session_start_failure_has_fail_phase(monkeypatch):
     assert getattr(e, "fail_phase", "") in ("initialize", "spawn", "new_session", "unknown")
 
 
+def test_acp_health_check_uses_non_mutating_session_list_probe():
+    """Health checks must not reload or otherwise mutate the active session."""
+    from types import SimpleNamespace
+
+    from src.acp.session import ACPSession
+
+    calls: list[tuple[str, object]] = []
+
+    class FakeConn:
+        async def list_sessions(self, *, cwd=None):
+            calls.append(("list_sessions", cwd))
+            return SimpleNamespace(sessions=[])
+
+        async def load_session(self, **_kwargs):
+            raise AssertionError("health check must not reload the live session")
+
+    session = ACPSession(agent_cmd="traex", agent_args=["acp", "serve"], cwd="/repo")
+    session._proc = SimpleNamespace(returncode=None)
+    session._conn = FakeConn()
+    session._session_id = "s_live"
+
+    assert asyncio.run(session.health_check(timeout=0.1)) is True
+    assert calls == [("list_sessions", "/repo")]
+
+    session._session_id = ""
+    assert asyncio.run(session.health_check(timeout=0.1)) is False
+    assert calls == [("list_sessions", "/repo")]
+
+
 def test_acp_manager_unhealthy_session_is_cleaned(monkeypatch):
     import time as _time
     from types import SimpleNamespace

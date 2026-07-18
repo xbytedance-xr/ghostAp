@@ -194,7 +194,7 @@ def test_traex_provider_serve_command_uses_config_model(mock_run):
 
 
 @patch("src.acp.providers.subprocess.run")
-def test_resolve_agent_spec_uses_registered_traex_provider(mock_run):
+def test_resolve_agent_spec_defers_traex_model_selection_to_acp_session(mock_run):
     _reset_providers_for_testing()
     mock_run.return_value = SimpleNamespace(
         stdout="Usage: traecli acp serve [OPTIONS]\nStart the ACP server over stdio\n",
@@ -204,7 +204,7 @@ def test_resolve_agent_spec_uses_registered_traex_provider(mock_run):
     cmd, args = resolve_agent_spec("traex", model_name="gpt-5")
 
     assert cmd == "traex"
-    assert args == ["acp", "serve", "-c", 'model="gpt-5"']
+    assert args == ["acp", "serve"]
 
 
 @patch("src.acp.providers.subprocess.run")
@@ -296,6 +296,37 @@ def test_traex_provider_strips_compound_variant_suffix_before_slug(mock_run, tmp
 
     assert cmd == "traex"
     # Base config_name resolves to slug; compound suffix is stripped.
+    assert args == ["acp", "serve", "-c", 'model="Test-O-New-Thinking"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_strips_standard_profile_before_slug(mock_run, tmp_path):
+    """The explicit standard profile is syntax, not part of the model slug."""
+    import json
+
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\n',
+        stderr="",
+    )
+    cache_data = {
+        "models": [
+            {"slug": "Test-O-New-Thinking", "config_name": "c_o_new_thinking"},
+        ]
+    }
+    provider = TraexProvider()
+    provider._load_slug_map.cache_clear()
+
+    with patch("pathlib.Path.home", return_value=tmp_path.parent):
+        trae_dir = tmp_path.parent / ".trae" / "cli"
+        trae_dir.mkdir(parents=True, exist_ok=True)
+        (trae_dir / "models_cache.json").write_text(json.dumps(cache_data))
+        provider._load_slug_map.cache_clear()
+        cmd, args = provider.get_serve_command(
+            "c_o_new_thinking/standard/high"
+        )
+
+    assert cmd == "traex"
     assert args == ["acp", "serve", "-c", 'model="Test-O-New-Thinking"']
 
 

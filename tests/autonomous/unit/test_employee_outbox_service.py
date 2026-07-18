@@ -255,6 +255,7 @@ def test_recovery_quarantines_orphans_and_gc_tombstones_superseded_versions(
 
         assert service.quarantine_unreferenced_blobs() == 1
         assert service.gc_superseded_snapshots() == 2
+        assert service.gc_superseded_snapshots() == 0
         record = service.state.by_outbox_id[queued.outbox_id]
         assert record.tombstoned_versions == frozenset({1, 2})
         assert service.get_snapshot(queued.outbox_id) == terminal

@@ -88,7 +88,7 @@ class EmployeeActor:
         self._idle_ttl = float(idle_ttl_seconds)
         self._monotonic = monotonic
         self._queue: queue.Queue[EmployeeAssignment | None] = queue.Queue()
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._known: set[str] = set()
         self._terminal: set[str] = set()
         self._canceled: set[str] = set()

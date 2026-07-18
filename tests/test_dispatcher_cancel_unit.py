@@ -263,6 +263,7 @@ class TestTTADKProcKillEscalation:
         session._prompt_count = 0
         session._cwd = "/tmp"
         session._agent_type = "ttadk_test"
+        session._employee_sandbox = None
         session.session_id = "test_session"
         session.last_active = 0
         session.message_count = 0
