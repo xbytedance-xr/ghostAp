@@ -57,6 +57,26 @@ def test_atomic_archive_writes_manifest_hashes_and_moves_source_once(tmp_path):
     assert archive.observe(_state()) is False
 
 
+def test_atomic_archive_scrubs_employee_traex_auth_before_move(tmp_path):
+    root = tmp_path / "agents"
+    source = root / "agt_alpha"
+    traex_home = source / "runtime/trae-home"
+    auth_file = traex_home / "cli/auth.json"
+    auth_file.parent.mkdir(parents=True)
+    auth_file.write_text('{"trae":{"access_token":"secret"}}', encoding="utf-8")
+    (traex_home / "AGENTS.md").write_text("# Employee constraints\n", encoding="utf-8")
+
+    archive = AtomicEmployeeArchive(root)
+    archive.execute(_state())
+
+    destination = root / ".archive" / "agt_alpha"
+    manifest = json.loads((destination / "archive_manifest.json").read_text())
+    assert "runtime/trae-home/cli/auth.json" not in manifest["files"]
+    assert not (destination / "runtime/trae-home/cli/auth.json").exists()
+    assert (destination / "runtime/trae-home/AGENTS.md").is_file()
+    assert archive.observe(_state()) is True
+
+
 def test_atomic_archive_records_empty_archive_when_workspace_was_never_created(tmp_path):
     root = tmp_path / "agents"
     archive = AtomicEmployeeArchive(root)

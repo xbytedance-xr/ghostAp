@@ -125,6 +125,8 @@ def test_handle_message_records_trusted_chat_origin(mock_ws_client: FeishuWSClie
 def test_employee_department_runtime_is_wired_and_enabled_by_default(
     mock_ws_client: FeishuWSClient,
 ) -> None:
+    from src.autonomous.gateway.env_scope import EmployeeEnvironmentAuthority
+
     runtime = mock_ws_client._employee_department_runtime
 
     assert runtime is not None
@@ -133,6 +135,11 @@ def test_employee_department_runtime_is_wired_and_enabled_by_default(
     assert mock_ws_client._handler_ctx.employee_hire_service is not None
     assert mock_ws_client._handler_ctx.employee_fire_service is not None
     assert mock_ws_client._handler_ctx.employee_hire_readiness().ready is True
+    material = runtime._environment_provider(  # noqa: SLF001
+        EmployeeEnvironmentAuthority("tenant_1", "agt_1", 1, "cred_1")
+    )
+    assert dict(material.credential_env) == {}
+    assert material.provider_files["traex_auth_json"].endswith("/.trae/cli/auth.json")
 
 
 def test_visible_employee_runtime_without_audit_fails_main_bot_outbound_closed() -> None:

@@ -567,6 +567,19 @@ def _real_coordinator_harness(
         active_key_id="data-key",
     )
     data.rebuild_projection()
+    auth_file = tmp_path / "manager-trae" / "cli" / "auth.json"
+    auth_file.parent.mkdir(parents=True)
+    auth_file.write_text(
+        '{"auth_mode":"trae","trae":{"access_token":"test-token"}}',
+        encoding="utf-8",
+    )
+    auth_file.chmod(0o600)
+    for agent_id in ("agt_alpha", "agt_beta") if second_candidate else ("agt_alpha",):
+        workspace = tmp_path / "registry-slock" / "agents" / agent_id / "workspace"
+        workspace.mkdir(parents=True)
+        constraints = workspace / "AGENTS.md"
+        constraints.write_text("# Projected employee constraints\n", encoding="utf-8")
+        constraints.chmod(0o600)
     manager = SlockEngineManager(storage_base_path=str(tmp_path / "slock"))
     root = tmp_path / "project"
     root.mkdir()
@@ -594,6 +607,7 @@ def _real_coordinator_harness(
             credential_ref=authority.credential_ref,
             runtime_env={"PATH": "/usr/bin"},
             credential_env={},
+            provider_files={"traex_auth_json": str(auth_file)},
         ),
         registry_factory=lambda state: ProjectedAgentRegistry(
             state,
@@ -1681,6 +1695,49 @@ def test_runtime_only_employee_environment_never_inherits_provider_secrets() -> 
     assert material.authority == authority
 
 
+def test_local_employee_environment_delegates_only_traex_auth_source(
+    tmp_path,
+) -> None:
+    from unittest.mock import patch
+
+    from src.autonomous.gateway import env_scope
+    from src.autonomous.gateway.env_scope import EmployeeEnvironmentAuthority
+
+    authority = EmployeeEnvironmentAuthority(
+        "tenant-a",
+        "agent-a",
+        3,
+        "cred-a",
+    )
+    provider = getattr(env_scope, "local_employee_environment", None)
+    assert provider is not None
+
+    traex_home = tmp_path / "manager-trae"
+    auth_file = traex_home / "cli/auth.json"
+    auth_file.parent.mkdir(parents=True)
+    auth_file.write_text(
+        '{"auth_mode":"trae","trae":{"access_token":"secret"}}',
+        encoding="utf-8",
+    )
+    auth_file.chmod(0o600)
+    with patch.dict(
+        "os.environ",
+        {
+            "PATH": "/usr/bin",
+            "LANG": "C.UTF-8",
+            "OPENAI_API_KEY": "manager-provider-key",
+            "LARK_APP_SECRET": "manager-bot-secret",
+        },
+        clear=True,
+    ):
+        material = provider(authority, traex_auth_home=str(traex_home))
+
+    assert dict(material.runtime_env) == {"LANG": "C.UTF-8", "PATH": "/usr/bin"}
+    assert dict(material.credential_env) == {}
+    assert dict(material.provider_files) == {"traex_auth_json": str(auth_file)}
+    assert material.authority == authority
+
+
 def test_coordinator_forces_projected_employee_env_into_real_slock(
     tmp_path,
     monkeypatch,
@@ -1705,6 +1762,11 @@ def test_coordinator_forces_projected_employee_env_into_real_slock(
                 "OTHER_EMPLOYEE_TOKEN": "peer-secret",
             },
             credential_env={"OPENAI_API_KEY": "employee-provider-key"},
+            provider_files={
+                "traex_auth_json": str(
+                    tmp_path / "manager-trae" / "cli" / "auth.json"
+                )
+            },
         )
     )
     prepared = harness.coordinator.prepare_next()
@@ -1714,6 +1776,9 @@ def test_coordinator_forces_projected_employee_env_into_real_slock(
         "HOME": expected_home,
         "OPENAI_API_KEY": "employee-provider-key",
         "PATH": "/usr/bin",
+        "TRAE_HOME": str(
+            tmp_path / "registry-slock" / "agents" / "agt_alpha" / "runtime" / "trae-home"
+        ),
     }
     observed = {}
 
@@ -1729,6 +1794,86 @@ def test_coordinator_forces_projected_employee_env_into_real_slock(
         "env": dict(prepared.permit.env),
         "system_prompt": "projected employee persona",
     }
+    harness.close()
+
+
+def test_real_employee_acp_starts_in_persistent_employee_workspace(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from pathlib import Path
+
+    from src.autonomous.workforce.registry import ProjectedAgentRegistry
+
+    harness = _real_coordinator_harness(tmp_path)
+    registry = ProjectedAgentRegistry(
+        harness.workforce,
+        storage_base_path=str(tmp_path / "registry-slock"),
+    )
+    agent = registry.as_slock_identity("tenant_1", "agt_alpha")
+    assert agent is not None
+    captured = {}
+
+    class _Session:
+        def set_tool_filter(self, callback):
+            captured["tool_filter"] = callback
+
+        def close(self):
+            acquired = threading.Event()
+
+            def acquire_engine_lock():
+                with harness.engine._lock:  # noqa: SLF001
+                    acquired.set()
+
+            probe = threading.Thread(target=acquire_engine_lock)
+            probe.start()
+            probe.join(0.5)
+            captured["lock_released_during_close"] = acquired.is_set()
+            captured["closed"] = True
+
+    def create_session(**kwargs):
+        captured.update(kwargs)
+        return _Session()
+
+    monkeypatch.setattr("src.slock_engine.engine.create_engine_session", create_session)
+
+    lease = harness.engine.open_employee_session(
+        agent,
+        env={"HOME": str(Path(agent.workspace_path).parent), "PATH": "/usr/bin"},
+    )
+    lease.close()
+
+    assert captured["cwd"] == agent.workspace_path
+    assert Path(captured["cwd"]).is_dir()
+    assert captured["closed"] is True
+    assert captured["lock_released_during_close"] is True
+    harness.close()
+
+
+def test_employee_acp_rejects_empty_workspace_in_actor_and_legacy_paths(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from src.autonomous.workforce.registry import ProjectedAgentRegistry
+    from src.slock_engine.engine import SecurityPolicyDegradedError
+
+    harness = _real_coordinator_harness(tmp_path)
+    registry = ProjectedAgentRegistry(
+        harness.workforce,
+        storage_base_path=str(tmp_path / "registry-slock"),
+    )
+    agent = registry.as_slock_identity("tenant_1", "agt_alpha")
+    assert agent is not None
+    agent = replace(agent, workspace_path="")
+    monkeypatch.setattr(
+        "src.slock_engine.engine.create_engine_session",
+        lambda **_kwargs: pytest.fail("invalid workspace must fail before ACP spawn"),
+    )
+
+    with pytest.raises(SecurityPolicyDegradedError, match="workspace"):
+        harness.engine.open_employee_session(agent, env={"HOME": "/tmp/employee"})
+    with pytest.raises(SecurityPolicyDegradedError, match="workspace"):
+        harness.engine._run_acp_session(agent, "do work")  # noqa: SLF001
     harness.close()
 
 

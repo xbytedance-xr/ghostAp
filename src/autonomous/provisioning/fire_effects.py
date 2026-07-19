@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -158,6 +159,7 @@ class AtomicEmployeeArchive:
         if not source.is_dir() or source.is_symlink():
             raise RuntimeError("employee archive source unavailable")
         self._archive_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._scrub_traex_auth(source)
         manifest = self._manifest(state, source)
         target = source / "archive_manifest.json"
         temporary = source / ".archive_manifest.tmp"
@@ -254,6 +256,31 @@ class AtomicEmployeeArchive:
         if not agent_id.startswith("agt_") or "/" in agent_id or ".." in agent_id:
             raise RuntimeError("invalid employee archive identity")
         return self._root / agent_id
+
+    @staticmethod
+    def _scrub_traex_auth(source: Path) -> None:
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptor = os.open(source, flags)
+        try:
+            for component in ("runtime", "trae-home", "cli"):
+                try:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                except FileNotFoundError:
+                    return
+                os.close(descriptor)
+                descriptor = child
+            try:
+                metadata = os.stat("auth.json", dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError("employee TraeX auth file is unsafe")
+            os.unlink("auth.json", dir_fd=descriptor)
+            os.fsync(descriptor)
+        except OSError as exc:
+            raise RuntimeError("employee TraeX auth cleanup failed") from exc
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _manifest(state: DurableFireState, source: Path) -> dict[str, Any]:

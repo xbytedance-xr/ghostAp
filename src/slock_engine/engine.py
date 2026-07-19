@@ -92,6 +92,21 @@ class _EmployeeSessionLease:
         close_session_safely(self._session)
 
 
+def _employee_acp_workspace(agent: AgentIdentity) -> str:
+    raw_workspace = agent.workspace_path
+    if (
+        not isinstance(raw_workspace, str)
+        or not raw_workspace
+        or "\x00" in raw_workspace
+        or not os.path.isabs(raw_workspace)
+    ):
+        raise SecurityPolicyDegradedError("employee ACP workspace is unavailable")
+    workspace = os.path.realpath(raw_workspace)
+    if not os.path.isdir(workspace):
+        raise SecurityPolicyDegradedError("employee ACP workspace is unavailable")
+    return workspace
+
+
 def _positive_seconds(value: object, default: float) -> float:
     """Return a positive timeout value, falling back for mocks or invalid config."""
     if isinstance(value, bool):
@@ -1611,10 +1626,11 @@ class SlockEngine(BaseEngine):
             )
         from src.agent_session.factory import employee_session_environment
 
+        session_cwd = _employee_acp_workspace(agent)
         with employee_session_environment(env):
             session = create_engine_session(
                 agent_type=agent.agent_type,
-                cwd=self.root_path,
+                cwd=session_cwd,
                 model_name=agent.model_name or None,
                 thread_id=f"employee_actor_{agent.agent_id}",
                 auto_approve=True,
@@ -3219,7 +3235,9 @@ class SlockEngine(BaseEngine):
         try:
             execution_errors.pop(agent.agent_id, None)
             thread_id = f"slock_agent_{agent.agent_id}"
+            session_cwd = self.root_path
             if agent.security_profile == "employee_v1":
+                session_cwd = _employee_acp_workspace(agent)
                 prompt = self.preview_employee_session_prompt(agent, prompt)
             # NOTE: agent.permissions defines the least-privilege tool set for
             # this role (e.g. ["file_read"] for planner). Tool authorization should
@@ -3227,7 +3245,7 @@ class SlockEngine(BaseEngine):
             # supported natively in create_engine_session.
             session = create_engine_session(
                 agent_type=agent.agent_type,
-                cwd=self.root_path,
+                cwd=session_cwd,
                 model_name=agent.model_name or None,
                 thread_id=thread_id,
                 auto_approve=True,

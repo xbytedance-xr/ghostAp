@@ -38,7 +38,7 @@ from .context_prompt import RenderedEmployeePrompt, render_employee_context
 from .env_scope import (
     EmployeeEnvironmentAuthority,
     EmployeeProcessEnvironmentMaterial,
-    build_employee_process_env,
+    build_employee_backend_env,
 )
 from .models import (
     DispatchBinding,
@@ -378,16 +378,15 @@ class EmployeeDispatchCoordinator:
         if not isinstance(material, EmployeeProcessEnvironmentMaterial) or material.authority != environment_authority:
             raise EmployeeDispatchError("employee environment authority mismatch")
         employee_home = str(Path(agent.workspace_path).parent)
-        env = build_employee_process_env(
-            material.runtime_env,
-            employee_home=employee_home,
-            credential_env=material.credential_env,
-            codex_home=(
-                str(Path(agent.workspace_path).parent / "runtime" / "codex-home")
-                if agent.agent_type == "codex"
-                else ""
-            ),
-        )
+        try:
+            env = build_employee_backend_env(
+                material,
+                agent_type=agent.agent_type,
+                employee_home=employee_home,
+                workspace_path=agent.workspace_path,
+            )
+        except Exception:
+            raise EmployeeDispatchError("employee environment projection failed") from None
         captured_head = self._presynchronize_domains()
         if team_instruction and not self._team_assignment_effect_is_active(part):
             self._router.reject_dispatch_candidate(

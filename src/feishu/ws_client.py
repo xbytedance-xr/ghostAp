@@ -357,7 +357,7 @@ class FeishuWSClient:
         self._employee_department_runtime = None
         try:
             from ..autonomous.gateway.env_scope import (
-                runtime_only_employee_environment,
+                local_employee_environment,
             )
             from ..autonomous.provisioning.composition import (
                 EmployeeDepartmentRuntime,
@@ -366,7 +366,14 @@ class FeishuWSClient:
             self._employee_department_runtime = EmployeeDepartmentRuntime.from_settings(
                 self.settings,
                 slock_engine_manager=self._slock_engine_manager,
-                employee_environment_provider=runtime_only_employee_environment,
+                employee_environment_provider=lambda authority: local_employee_environment(
+                    authority,
+                    traex_auth_home=getattr(
+                        self.settings,
+                        "autonomous_employee_traex_auth_home",
+                        "~/.trae",
+                    ),
+                ),
                 manager_client_factory=self._get_api_client,
                 notification_link=lambda state, url, expire_in: self._reply_text(
                     state.message_id,
