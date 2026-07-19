@@ -29,5 +29,6 @@ private directory as `TRAE_HOME`. Other backends never receive `TRAE_HOME`.
 
 - [x] Run the expanded Autonomous suite, Ruff, config validation, and diff checks.
 - [x] Run a real no-prompt TraeX ACP probe with an employee-private `TRAE_HOME`.
-- [ ] Update `.Memory`, commit and push `dev`, restart and inspect new logs.
-- [ ] Delete every local and remote branch except `dev` after confirming the push.
+- [x] Update `.Memory`, commit and push `dev`, restart and inspect new logs.
+- [x] Keep only `main` and `dev` locally and remotely, per the user's final branch
+  instruction.
