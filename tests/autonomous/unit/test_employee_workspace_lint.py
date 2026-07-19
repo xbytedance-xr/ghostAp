@@ -58,3 +58,28 @@ def test_workspace_snapshot_is_frozen(tmp_path: Path) -> None:
     with pytest.raises(FrozenInstanceError):
         snapshot.identity_version = 3  # type: ignore[misc]
     assert isinstance(snapshot, EmployeeWorkspaceSnapshot)
+
+
+def test_lint_allows_backend_modes_below_private_trae_home(tmp_path: Path) -> None:
+    snapshot = EmployeeWorkspaceProjector(tmp_path / "agents").project(_source())
+    trae_home = tmp_path / "agents/agt_lint/runtime/trae-home"
+    sessions = trae_home / "cli/sessions/2026/07/19"
+    sessions.mkdir(parents=True)
+    trae_home.chmod(0o700)
+    (trae_home / "cli").chmod(0o755)
+    (trae_home / "cli/sessions").chmod(0o755)
+    (trae_home / "cli/sessions/2026").chmod(0o755)
+    (trae_home / "cli/sessions/2026/07").chmod(0o755)
+    sessions.chmod(0o755)
+    rollout = sessions / "rollout.jsonl"
+    rollout.write_text("{}\n", encoding="utf-8")
+    rollout.chmod(0o644)
+
+    lint_employee_workspace(snapshot, tmp_path / "agents")
+
+    trae_home.chmod(0o755)
+    with pytest.raises(WorkspaceLintError) as raised:
+        lint_employee_workspace(snapshot, tmp_path / "agents")
+    assert ("unsafe_mode", "runtime/trae-home") in {
+        (issue.code, issue.path) for issue in raised.value.issues
+    }

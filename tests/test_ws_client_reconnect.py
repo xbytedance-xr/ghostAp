@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from src.feishu.ws_client import (
     _employee_hire_status_text,
     _employee_hire_status_uuid,
@@ -140,6 +142,122 @@ def test_main_ws_acknowledges_bot_deleted_events() -> None:
     source = inspect.getsource(FeishuWSClient.start)
 
     assert "register_p2_im_chat_member_bot_deleted_v1" in source
+
+
+def test_main_bot_deleted_event_retires_persisted_slock_marker() -> None:
+    from src.feishu.ws_client import FeishuWSClient
+
+    calls: list[tuple[str, ...]] = []
+
+    class _Manager:
+        def retire_deleted_chat(self, chat_id: str):
+            calls.append(("retire", chat_id))
+
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client._slock_engine_manager = _Manager()
+
+    client._handle_bot_deleted(
+        SimpleNamespace(event=SimpleNamespace(chat_id="oc_deleted"))
+    )
+
+    assert calls == [("retire", "oc_deleted")]
+
+
+def test_main_bot_deleted_event_retires_marker_without_loaded_engine() -> None:
+    from src.feishu.ws_client import FeishuWSClient
+
+    calls: list[tuple[str, ...]] = []
+
+    class _Manager:
+        def retire_deleted_chat(self, chat_id: str):
+            calls.append(("retire", chat_id))
+
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client._slock_engine_manager = _Manager()
+
+    client._handle_bot_deleted(
+        SimpleNamespace(event=SimpleNamespace(chat_id="oc_marker_only"))
+    )
+
+    assert calls == [("retire", "oc_marker_only")]
+
+
+def test_main_bot_deleted_event_propagates_marker_archive_failure() -> None:
+    from src.feishu.ws_client import FeishuWSClient
+
+    class _Manager:
+        def retire_deleted_chat(self, _chat_id: str):
+            raise OSError("disk unavailable")
+
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client._slock_engine_manager = _Manager()
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        client._handle_bot_deleted(
+            SimpleNamespace(event=SimpleNamespace(chat_id="oc_archive_failure"))
+        )
+
+
+def test_recovered_hire_notification_restores_trusted_recipient_scope() -> None:
+    from unittest.mock import MagicMock
+
+    from src.feishu.ws_client import FeishuWSClient
+    from src.project.mapper import MessageLinker
+    from src.thread.manager import get_current_tenant_key
+
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client._message_linker = MessageLinker()
+    client._get_chat_mode = MagicMock(return_value="p2p")
+    client._reply_text = MagicMock(return_value="om_status")
+    state = SimpleNamespace(
+        intent_id="hire_1",
+        tenant_key="tenant-a",
+        message_id="om_hire",
+        chat_id="oc_requester_dm",
+        requester_principal_id="ou_requester",
+        employee_name="Atlas",
+    )
+
+    assert client._reply_employee_hire_status(state, "ready") == "om_status"
+
+    origin = client._message_linker.query("om_hire")
+    assert origin is not None
+    assert origin["chat_id"] == "oc_requester_dm"
+    assert origin["sender_id"] == "ou_requester"
+    assert origin["chat_type"] == "p2p"
+    assert origin["tenant_key"] == "tenant-a"
+    client._reply_text.assert_called_once()
+    assert get_current_tenant_key() is None
+
+
+def test_recovered_hire_notification_rejects_conflicting_recipient_scope() -> None:
+    from unittest.mock import MagicMock
+
+    from src.feishu.ws_client import FeishuWSClient
+    from src.project.mapper import MessageLinker
+
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client._message_linker = MessageLinker()
+    client._message_linker.register_trusted_origin_if_absent(
+        "om_hire",
+        chat_id="oc_other",
+        sender_id="ou_other",
+        chat_type="p2p",
+    )
+    client._get_chat_mode = MagicMock(return_value="p2p")
+    client._reply_text = MagicMock()
+    state = SimpleNamespace(
+        intent_id="hire_1",
+        tenant_key="tenant-a",
+        message_id="om_hire",
+        chat_id="oc_requester_dm",
+        requester_principal_id="ou_requester",
+        employee_name="Atlas",
+    )
+
+    assert client._reply_employee_hire_status(state, "ready") is None
+    client._reply_text.assert_not_called()
+    client._get_chat_mode.assert_not_called()
 
 
 def test_lifecycle_fatal_errors_are_not_silently_swallowed():

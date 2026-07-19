@@ -2323,13 +2323,20 @@ class EmployeeDepartmentRuntime:
         worked = False
         for acceptance_id, record in tuple(ingress.state.by_acceptance_id.items()):
             if record.disposition is None:
+                if self._handle_control_ingress(acceptance_id):
+                    worked = True
+                    continue
+                # Employee Bot subscriptions also observe group slash commands
+                # owned by the main Bot.  Consume those after employee-specific
+                # controls so commands such as ``/role list`` cannot be routed
+                # into every employee mailbox as coding work.
+                if self._handle_main_bot_group_command_ingress(acceptance_id):
+                    worked = True
+                    continue
                 # The ingress payload may be reclaimed as soon as dispatch reaches a
                 # terminal disposition.  Project shared group context on this same
                 # serialized path before routing so context assembly cannot race GC.
                 self._record_employee_ingress_group_event(acceptance_id)
-                if self._handle_control_ingress(acceptance_id):
-                    worked = True
-                    continue
                 routed = router.state.by_acceptance_id.get(acceptance_id)
                 if routed is None or routed.state not in {
                     "queued",
@@ -2709,6 +2716,46 @@ class EmployeeDepartmentRuntime:
         except IngressConflictError:
             pass
         self._drain_employee_outbox_once()
+        return True
+
+    def _handle_main_bot_group_command_ingress(self, acceptance_id: str) -> bool:
+        """Ignore main-Bot slash commands observed by an employee group Bot."""
+
+        ingress = self._ingress
+        if ingress is None:
+            return False
+        record = ingress.state.by_acceptance_id.get(acceptance_id)
+        if record is None or record.disposition is not None:
+            return False
+        metadata = record.metadata
+        if (
+            metadata.event_type != "im.message.receive_v1"
+            or metadata.action_identity
+        ):
+            return False
+        try:
+            payload = ingress.get_payload(acceptance_id)
+        except Exception:
+            return False
+        first = payload.normalized_parts[0] if len(payload.normalized_parts) == 1 else None
+        if (
+            not isinstance(first, Mapping)
+            or first.get("type") != "message"
+            or first.get("chat_type") != "group"
+        ):
+            return False
+        content = first.get("content")
+        text = content.get("text") if isinstance(content, Mapping) else None
+        if not isinstance(text, str) or not text.lstrip().startswith("/"):
+            return False
+        try:
+            ingress.record_disposition(
+                acceptance_id,
+                state="ignored",
+                reason_code="main_bot_group_command",
+            )
+        except IngressConflictError:
+            pass
         return True
 
     def _handle_pending_verification_group_mention(
@@ -4733,6 +4780,35 @@ class EmployeeDepartmentRuntime:
         text = content.get("text") if isinstance(content, Mapping) else content
         if not isinstance(text, str) or not text:
             return False
+        sender_id = part.get("sender_id")
+        sender_union_id = part.get("sender_union_id", "")
+        service = self._service
+        if (
+            not isinstance(sender_id, str)
+            or not sender_id
+            or not isinstance(sender_union_id, str)
+            or service is None
+        ):
+            return False
+        service.synchronize_projection()
+        states = tuple(
+            state
+            for state in service.list_states()
+            if state.tenant_key == record.metadata.tenant_key
+            and state.agent_id == record.metadata.agent_id
+        )
+        if len(states) != 1:
+            return False
+        owner_principal_id = states[0].requester_principal_id
+        canonical_sender_id = self._resolve_employee_requester_principal(
+            tenant_key=record.metadata.tenant_key,
+            agent_id=record.metadata.agent_id,
+            owner_principal_id=owner_principal_id,
+            sender_principal_id=sender_id,
+            sender_union_id=sender_union_id,
+        )
+        if canonical_sender_id is None:
+            return False
         ledger.publish(
             tenant_key=record.metadata.tenant_key,
             chat_id=chat_id,
@@ -4741,7 +4817,7 @@ class EmployeeDepartmentRuntime:
             transport_principal_id=record.metadata.bot_principal_id,
             transport_event_id=record.metadata.event_id,
             payload=GroupEventPayload(
-                sender_id=str(part.get("sender_id", "")),
+                sender_id=canonical_sender_id,
                 sender_id_type=str(part.get("sender_id_type", "")),
                 sender_type=str(part.get("sender_type", "")),
                 sender_tenant_key=str(part.get("sender_tenant_key", "")),

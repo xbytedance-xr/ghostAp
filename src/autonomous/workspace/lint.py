@@ -75,6 +75,10 @@ def inspect_employee_workspace(
         issues.append(WorkspaceLintIssue("instruction_mismatch", "runtime/codex-home/AGENTS.md"))
     if agents and hashlib.sha256(agents).hexdigest() != snapshot.instruction_digest:
         issues.append(WorkspaceLintIssue("instruction_digest", "workspace/AGENTS.md"))
+    backend_private_roots = (
+        root / ".trae",
+        root / "runtime" / "trae-home",
+    )
     for directory, subdirectories, _files in os.walk(root, followlinks=False):
         if Path(directory).is_symlink():
             issues.append(WorkspaceLintIssue("unsafe_type", str(Path(directory).relative_to(root))))
@@ -82,6 +86,13 @@ def inspect_employee_workspace(
             candidate = Path(directory) / name
             if candidate.is_symlink():
                 issues.append(WorkspaceLintIssue("unsafe_type", str(candidate.relative_to(root))))
+            elif any(
+                private_root in candidate.parents
+                for private_root in backend_private_roots
+            ):
+                # Backend-owned descendants inherit isolation from their 0700
+                # home boundary and may require conventional executable modes.
+                continue
             elif candidate.stat().st_mode & 0o777 != 0o700:
                 issues.append(WorkspaceLintIssue("unsafe_mode", str(candidate.relative_to(root))))
     return tuple(issues)

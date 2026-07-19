@@ -386,7 +386,7 @@ class TestCreateTeamRollback:
         mock_lark.delete_chat.return_value = True
 
         # Force engine activation to fail
-        ctx.slock_engine_manager.get_or_create = MagicMock(
+        ctx.slock_engine_manager.get_or_create_activated = MagicMock(
             side_effect=RuntimeError("Engine init failed")
         )
 
@@ -458,7 +458,7 @@ class TestCreateTeamRollback:
             chat_id="oc_residual", name="ResidualTeam"
         )
         mock_lark.delete_chat.return_value = delete_result
-        ctx.slock_engine_manager.get_or_create = MagicMock(
+        ctx.slock_engine_manager.get_or_create_activated = MagicMock(
             side_effect=RuntimeError("Engine init failed")
         )
 
@@ -619,8 +619,12 @@ class TestTeamAdminCommands:
         handler = _make_slock_handler(ctx)
         root_path = str(tmp_path / "project_root")
         os.makedirs(root_path)
-        engine = ctx.slock_engine_manager.get_or_create("oc_alpha", root_path, engine_name="Slock")
-        engine.activate_channel(SlockChannel(channel_id="oc_alpha", name="Alpha Chat", team_name="Alpha"))
+        engine = ctx.slock_engine_manager.get_or_create_activated(
+            "oc_alpha",
+            root_path,
+            SlockChannel(channel_id="oc_alpha", name="Alpha Chat", team_name="Alpha"),
+            engine_name="Slock",
+        )
         engine.get_status_card = MagicMock(return_value={"header": {"title": {"content": "Alpha"}}})
 
         handler.show_team_status("msg_status", "oc_admin", "Alpha")

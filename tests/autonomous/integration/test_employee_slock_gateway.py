@@ -586,6 +586,7 @@ def _real_coordinator_harness(
     engine = manager.get_or_create("oc_team", str(root))
     with slock_activation_guard():
         engine._channel = SlockChannel(channel_id="oc_team")  # noqa: SLF001
+        manager.register_managed_chat("oc_team")
     hire = _Hire()
     channels = _Channels()
     context = _Context()
@@ -1236,6 +1237,7 @@ def test_employee_slock_resolution_rejects_zero_or_multiple_activated_roots(
     one = manager.get_or_create("oc_team", root_one)
     with slock_activation_guard():
         one._channel = SlockChannel(channel_id="oc_team")  # noqa: SLF001
+        manager.register_managed_chat("oc_team")
     binding = manager.resolve_employee_engine(
         chat_id="oc_team",
         expected_root_identity=expected,
@@ -1290,6 +1292,7 @@ def test_activation_guard_blocks_activate_and_deactivate_through_commit_barrier(
         assert engine.channel is None
     thread.join(3)
     assert activation_done.is_set()
+    manager.register_managed_chat("oc_team")
 
     deactivation_started = threading.Event()
     deactivation_done = threading.Event()
@@ -2616,6 +2619,7 @@ def test_manager_membership_is_frozen_through_employee_activation_guard(
     monkeypatch.setattr(engine, "cleanup", lambda: None)
     with slock_activation_guard():
         engine._channel = SlockChannel(channel_id="oc_team")  # noqa: SLF001
+        manager.register_managed_chat("oc_team")
     create_started = threading.Event()
     create_done = threading.Event()
     remove_started = threading.Event()

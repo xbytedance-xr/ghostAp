@@ -59,6 +59,25 @@ class TestBootstrapGating:
         assert result is False
         assert not ready.is_set()
 
+    def test_empty_registry_without_queued_tasks_enters_standby_without_warning(self, caplog):
+        """An idle restored group must not claim that it retained tasks."""
+        from src.slock_engine.engine import SlockEngine
+
+        engine = _make_engine_mock()
+        engine._bootstrap_ready.set()
+        engine.list_agents.return_value = []
+        engine._task_queue = MagicMock()
+        engine._task_queue.size.return_value = 0
+        engine._task_queue.wait_for_idle.side_effect = lambda **_kwargs: engine._dispatch_stop.set()
+
+        with patch("src.slock_engine.engine.get_settings") as settings:
+            settings.return_value.slock_bootstrap_timeout = 0.01
+            SlockEngine._dispatch_loop(engine)
+
+        assert "Bootstrap attempt" not in caplog.text
+        assert "tasks retained" not in caplog.text
+        engine._send_bootstrap_recovery_card.assert_not_called()
+
 
 # ============================================================
 # Timeout detection

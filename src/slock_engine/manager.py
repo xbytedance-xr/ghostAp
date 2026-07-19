@@ -45,6 +45,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
     def __init__(self, storage_base_path: str = "") -> None:
         super().__init__()
         self._managed_chats: set[str] = set()
+        self._retired_chats: set[str] = set()
         self._dissolving_chats: set[str] = set()
         self._reserved_team_names: set[str] = set()
         self._storage_base_path = storage_base_path or default_slock_storage_base()
@@ -197,6 +198,24 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
             raise FileNotFoundError(archived_path)
         os.replace(archived_path, os.path.join(group_dir, ".slock_channel.json"))
 
+    def retire_deleted_chat(self, chat_id: str) -> Optional[str]:
+        """Durably retire a remotely deleted chat and all indexed runtimes.
+
+        Inactive engines remain indexed after a partial ``deactivate()``
+        failure. Enumerating the full chat index lets a redelivered Lark event
+        finish that interrupted teardown.
+        """
+
+        with slock_activation_guard():
+            self._retired_chats.add(chat_id)
+            archived_path = self.archive_managed_chat_marker(chat_id)
+            for engine in tuple(self._iter_chat_engines(chat_id)):
+                root_path = engine.root_path
+                engine.deactivate()
+                self.remove(chat_id, root_path)
+            self.unregister_managed_chat(chat_id)
+            return archived_path
+
     def is_managed_chat(self, chat_id: str) -> bool:
         """Check if a chat_id is managed by the slock engine."""
         with self._lock:
@@ -237,6 +256,63 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
                 model_name=model_name,
             )
 
+    def get_or_create_activated(
+        self,
+        chat_id: str,
+        root_path: str,
+        channel,
+        engine_name: str = "Coco",
+        *,
+        model_name: Optional[str] = None,
+    ) -> SlockEngine:
+        """Atomically create, activate, and register a live chat binding."""
+
+        if channel.channel_id != chat_id:
+            raise SlockEngineResolutionError("Slock channel binding mismatch")
+        with slock_activation_guard():
+            if chat_id in self._retired_chats:
+                raise SlockEngineResolutionError("deleted Slock chat cannot be reactivated")
+            with self._lock:
+                committed = self._get_activated_engine_locked(chat_id)
+            if committed is not None:
+                return committed
+            engine = super().get_or_create(
+                chat_id,
+                root_path,
+                engine_name,
+                model_name=model_name,
+            )
+            try:
+                engine.activate_channel(channel)
+                self.register_managed_chat(chat_id)
+            except Exception:
+                self._rollback_failed_activation(chat_id, root_path, engine)
+                raise
+            return engine
+
+    def _rollback_failed_activation(
+        self,
+        chat_id: str,
+        root_path: str,
+        engine: SlockEngine,
+    ) -> None:
+        """Make a partially activated engine unreachable before retry."""
+
+        try:
+            engine.deactivate()
+        except Exception:
+            logger.exception("failed to deactivate partial Slock activation chat=%s", chat_id)
+        try:
+            engine.cleanup()
+        except Exception:
+            logger.exception("failed to clean partial Slock activation chat=%s", chat_id)
+        key = f"{chat_id}:{root_path}"
+        with self._lock:
+            self._managed_chats.discard(chat_id)
+            if self._engines.get(key) is engine:
+                del self._engines[key]
+                self._remove_index(chat_id, key)
+
     def remove(self, chat_id: str, root_path: str) -> None:
         """Remove and cleanup a slock engine instance."""
         key = f"{chat_id}:{root_path}"
@@ -254,9 +330,17 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
             self._remove_index(chat_id, key)
 
     def get_activated_engine(self, chat_id: str) -> Optional[SlockEngine]:
-        """Get the slock engine for a chat if it has an activated channel."""
-        for engine in self._iter_chat_engines(chat_id):
-            if engine.channel is not None:
+        """Get only a fully activated and event-routable chat binding."""
+
+        with slock_activation_guard(), self._lock:
+            return self._get_activated_engine_locked(chat_id)
+
+    def _get_activated_engine_locked(self, chat_id: str) -> Optional[SlockEngine]:
+        if chat_id not in self._managed_chats:
+            return None
+        for key in self._chat_keys.get(chat_id, ()):
+            engine = self._engines.get(key)
+            if engine is not None and engine.channel is not None:
                 return engine
         return None
 
@@ -307,7 +391,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
             if (engine := self._engines.get(key)) is not None
             and engine.channel is not None
         )
-        if len(engines) != 1:
+        if chat_id not in self._managed_chats or len(engines) != 1:
             raise SlockEngineResolutionError(
                 "employee Slock requires exactly one activated engine"
             )
@@ -337,7 +421,14 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
 
     def list_activated_engines(self) -> list[SlockEngine]:
         """List all engines with an activated slock channel."""
-        return [engine for engine in self.list_engines() if engine.channel is not None]
+        with slock_activation_guard(), self._lock:
+            return [
+                engine
+                for chat_id in self._managed_chats
+                for key in self._chat_keys.get(chat_id, ())
+                if (engine := self._engines.get(key)) is not None
+                and engine.channel is not None
+            ]
 
     def find_team(self, name: str) -> Optional[SlockEngine]:
         """Find an activated team by team name, channel name, or chat id."""
@@ -429,17 +520,18 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
                         marker,
                         channel_dir,
                     )
-                    engine = self.get_or_create(
-                        channel_id, engine_root_path, engine_name="Slock"
-                    )
                     channel = SlockChannel(
                         channel_id=channel_id,
                         name=marker.get("name", ""),
                         team_name=marker.get("team_name", ""),
                         owner_id=marker.get("owner_id", ""),
                     )
-                    engine.activate_channel(channel)
-                    self.register_managed_chat(channel_id)
+                    self.get_or_create_activated(
+                        channel_id,
+                        engine_root_path,
+                        channel,
+                        engine_name="Slock",
+                    )
                     restored += 1
                     logger.info(
                         "restore_from_disk: restored slock engine for chat=%s team=%s",

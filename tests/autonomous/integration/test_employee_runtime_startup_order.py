@@ -286,16 +286,160 @@ def test_production_dispatch_projects_group_context_before_routing_and_gc(
         "_handle_control_ingress",
         lambda observed_acceptance_id: calls.append("handle_control") or False,
     )
+    monkeypatch.setattr(
+        runtime,
+        "_handle_main_bot_group_command_ingress",
+        lambda observed_acceptance_id: calls.append("command_gate") or False,
+    )
 
     runtime._drain_employee_dispatch_once()  # noqa: SLF001
 
     assert calls == [
-        "project_group_context",
         "handle_control",
+        "command_gate",
+        "project_group_context",
         "route",
         "dispatch",
         "gc_payload",
     ]
+
+
+def test_production_dispatch_ignores_main_bot_group_command_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    acceptance_id = "acc_ambient_message"
+    pending = SimpleNamespace(
+        disposition=None,
+        metadata=SimpleNamespace(
+            event_type="im.message.receive_v1",
+            action_identity="",
+        ),
+    )
+
+    class _Ingress:
+        state = SimpleNamespace(by_acceptance_id={acceptance_id: pending})
+
+        def rebuild_projection(self):
+            return None
+
+        def get_payload(self, observed_acceptance_id: str):
+            assert observed_acceptance_id == acceptance_id
+            return SimpleNamespace(
+                normalized_parts=(
+                    {
+                        "type": "message",
+                        "chat_type": "group",
+                        "content": {"text": "/role list"},
+                    },
+                )
+            )
+
+        def record_disposition(
+            self,
+            observed_acceptance_id: str,
+            *,
+            state: str,
+            reason_code: str,
+        ):
+            assert observed_acceptance_id == acceptance_id
+            calls.append("command_gate")
+            pending.disposition = SimpleNamespace(state=state, reason_code=reason_code)
+
+        def gc_terminal_payloads(self):
+            calls.append("gc_payload")
+            return 0
+
+    class _Router:
+        state = SimpleNamespace(by_acceptance_id={})
+
+        def rebuild_projection(self):
+            return None
+
+        def route(self, _acceptance_id: str):
+            calls.append("route")
+
+    class _Dispatch:
+        employee_runtime = None
+
+        def dispatch_next(self):
+            calls.append("dispatch")
+            return None
+
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = _Ingress()  # type: ignore[assignment]  # noqa: SLF001
+    runtime._router = _Router()  # type: ignore[assignment]  # noqa: SLF001
+    runtime._dispatch = _Dispatch()  # type: ignore[assignment]  # noqa: SLF001
+    monkeypatch.setattr(
+        runtime,
+        "_record_employee_ingress_group_event",
+        lambda _acceptance_id: calls.append("project_group_context"),
+    )
+    monkeypatch.setattr(runtime, "_handle_control_ingress", lambda _acceptance_id: False)
+    runtime._drain_employee_dispatch_once()  # noqa: SLF001
+
+    assert calls == ["command_gate", "dispatch", "gc_payload"]
+    assert pending.disposition.reason_code == "main_bot_group_command"
+
+
+def test_employee_group_projection_maps_app_open_id_to_owner_principal() -> None:
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+    from src.autonomous.provisioning.hire_state import HirePhase
+
+    acceptance_id = "acc_app_scoped_sender"
+    metadata = SimpleNamespace(
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        bot_principal_id="bot_alpha",
+        event_id="evt_employee",
+        chat_id="oc_team",
+        message_id="om_message",
+        thread_root_message_id="",
+        sender_principal_id="ou_employee_app",
+    )
+    part = {
+        "type": "message",
+        "message_type": "text",
+        "chat_type": "group",
+        "content": {"text": "/role list"},
+        "sender_id": "ou_employee_app",
+        "sender_union_id": "on_owner",
+        "sender_id_type": "open_id",
+        "sender_type": "user",
+        "sender_tenant_key": "tenant_1",
+        "feishu_thread_id": "",
+    }
+    ingress = SimpleNamespace(
+        state=SimpleNamespace(
+            by_acceptance_id={acceptance_id: SimpleNamespace(metadata=metadata)}
+        ),
+        get_payload=lambda _acceptance_id: SimpleNamespace(normalized_parts=(part,)),
+    )
+    state = SimpleNamespace(
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        phase=HirePhase.ACTIVE,
+        requester_principal_id="ou_main_app_owner",
+        requester_union_id="on_owner",
+    )
+    service = SimpleNamespace(
+        synchronize_projection=lambda: None,
+        list_states=lambda: (state,),
+    )
+    published: list[object] = []
+    ledger = SimpleNamespace(publish=lambda **kwargs: published.append(kwargs))
+
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = ingress  # type: ignore[assignment]  # noqa: SLF001
+    runtime._service = service  # type: ignore[assignment]  # noqa: SLF001
+    runtime._group_ledger = ledger  # type: ignore[assignment]  # noqa: SLF001
+
+    assert runtime._record_employee_ingress_group_event(acceptance_id) is True  # noqa: SLF001
+    payload = published[0]["payload"]  # type: ignore[index]
+    assert payload.sender_id == "ou_main_app_owner"
+    assert payload.sender_id_type == "open_id"
 
 
 @pytest.mark.asyncio

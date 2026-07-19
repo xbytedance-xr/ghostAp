@@ -108,7 +108,7 @@ class TestE2EHandlerToEngine:
         manager = MagicMock()
         manager.get_activated_engine.return_value = None  # not yet activated
         engine_mock = MagicMock()
-        manager.get_or_create.return_value = engine_mock
+        manager.get_or_create_activated.return_value = engine_mock
         handler._get_engine_manager = MagicMock(return_value=manager)
         handler._ensure_project = MagicMock(return_value=MagicMock(
             root_path="/tmp/test", project_name="TestProj", project_id="p1"
@@ -122,8 +122,7 @@ class TestE2EHandlerToEngine:
                 handler.activate_slock("msg_1", "chat_e2e", "")
 
         # Engine was created and channel was activated
-        manager.get_or_create.assert_called_once()
-        engine_mock.activate_channel.assert_called_once()
+        manager.get_or_create_activated.assert_called_once()
 
     def test_at_mention_routes_to_specific_agent(self):
         """AC-05: @AgentName routes message to the named agent."""

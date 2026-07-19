@@ -420,7 +420,7 @@ class TestActivateSlockAutoBootstrap:
         engine.channel = MagicMock()
         manager = MagicMock()
         manager.get_activated_engine.return_value = None
-        manager.get_or_create.return_value = engine
+        manager.get_or_create_activated.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
         with patch("src.thread.manager.get_current_sender_id", return_value="user_001"):
@@ -453,7 +453,7 @@ class TestActivateSlockAutoBootstrap:
         engine = MagicMock()
         manager = MagicMock()
         manager.get_activated_engine.return_value = None
-        manager.get_or_create.return_value = engine
+        manager.get_or_create_activated.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
         with patch("src.thread.manager.get_current_sender_id", return_value="user_001"):
@@ -589,7 +589,7 @@ class TestBootstrapSignalsDispatchLoop:
         engine = MagicMock()
         manager = MagicMock()
         manager.get_activated_engine.return_value = None
-        manager.get_or_create.return_value = engine
+        manager.get_or_create_activated.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
         mock_bootstrap.return_value = [MagicMock()]
@@ -623,7 +623,7 @@ class TestBootstrapSignalsDispatchLoop:
         engine = MagicMock()
         manager = MagicMock()
         manager.get_activated_engine.return_value = None
-        manager.get_or_create.return_value = engine
+        manager.get_or_create_activated.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
         mock_bootstrap.side_effect = RuntimeError("bootstrap crash")
@@ -657,7 +657,7 @@ class TestBootstrapSignalsDispatchLoop:
         engine = MagicMock()
         manager = MagicMock()
         manager.get_activated_engine.return_value = None
-        manager.get_or_create.return_value = engine
+        manager.get_or_create_activated.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
         with patch("src.thread.manager.get_current_sender_id", return_value="user_1"):
@@ -684,4 +684,3 @@ class TestBootstrapSignalsDispatchLoop:
         handler.create_static_card_session = MagicMock()
         handler.create_static_card_session.return_value = MagicMock()
         return handler
-

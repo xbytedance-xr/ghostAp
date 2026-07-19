@@ -52,7 +52,12 @@ from ..project import (
 from ..slock_engine import SlockEngineManager
 from ..spec_engine import SpecEngineManager, SpecReporter
 from ..tasking import TaskPriority, TaskScheduler, TaskSpec
-from ..thread import get_current_tenant_key, get_current_thread_id, get_thread_manager
+from ..thread import (
+    get_current_tenant_key,
+    get_current_thread_id,
+    get_thread_manager,
+    set_current_tenant_key,
+)
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from ..utils.errors import get_error_detail
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
@@ -375,22 +380,11 @@ class FeishuWSClient:
                     ),
                 ),
                 manager_client_factory=self._get_api_client,
-                notification_link=lambda state, url, expire_in: self._reply_text(
-                    state.message_id,
+                notification_link=lambda state, url, expire_in: self._reply_employee_hire_message(
+                    state,
                     f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",
                 ),
-                notification_status=lambda state, status: (
-                    self._reply_text(
-                        state.message_id,
-                        _employee_hire_status_text(state.employee_name, status),
-                        idempotency_key=_employee_hire_status_uuid(
-                            state.intent_id,
-                            status,
-                        ),
-                    )
-                    if status in {"polling", "ready", "active", "action_required"}
-                    else None
-                ),
+                notification_status=self._reply_employee_hire_status,
                 team_notification=(
                     lambda message_id, _chat_id, result, idempotency_key="": self._reply_text(
                         message_id,
@@ -2290,6 +2284,91 @@ class FeishuWSClient:
             return False
         return registered is True and chat_mode == "p2p"
 
+    def _reply_employee_hire_status(self, state: object, status: str) -> object | None:
+        text = _employee_hire_status_text(
+            str(getattr(state, "employee_name", "")),
+            status,
+        )
+        if text is None:
+            return None
+        intent_id = getattr(state, "intent_id", "")
+        if not isinstance(intent_id, str) or not intent_id:
+            return None
+        return self._reply_employee_hire_message(
+            state,
+            text,
+            idempotency_key=_employee_hire_status_uuid(intent_id, status),
+        )
+
+    def _reply_employee_hire_message(
+        self,
+        state: object,
+        text: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> object | None:
+        """Restore durable requester scope before a recovered hire reply."""
+
+        if not self._restore_employee_hire_origin(state):
+            logger.warning("employee hire notification recipient scope is unavailable")
+            return None
+        message_id = getattr(state, "message_id", "")
+        tenant_key = getattr(state, "tenant_key", "")
+        previous_tenant_key = get_current_tenant_key()
+        set_current_tenant_key(tenant_key or None)
+        try:
+            return self._reply_text(
+                message_id,
+                text,
+                idempotency_key=idempotency_key,
+            )
+        finally:
+            set_current_tenant_key(previous_tenant_key)
+
+    def _restore_employee_hire_origin(self, state: object) -> bool:
+        message_id = getattr(state, "message_id", "")
+        chat_id = getattr(state, "chat_id", "")
+        sender_id = getattr(state, "requester_principal_id", "")
+        tenant_key = getattr(state, "tenant_key", "")
+        if not all(
+            isinstance(value, str) and bool(value)
+            for value in (message_id, chat_id, sender_id)
+        ) or not isinstance(tenant_key, str):
+            return False
+        try:
+            origin = self._message_linker.query(message_id)
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+        if origin is not None:
+            if (
+                origin.get("origin_message_id") != message_id
+                or origin.get("chat_id") != chat_id
+                or origin.get("sender_id") != sender_id
+                or origin.get("chat_type") not in {"p2p", "group", "topic_group"}
+                or origin.get("tenant_key") not in {None, "", tenant_key}
+            ):
+                return False
+        else:
+            chat_mode = self._get_chat_mode(chat_id)
+            if chat_mode is None:
+                return False
+            try:
+                registered = self._message_linker.register_trusted_origin_if_absent(
+                    message_id,
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    chat_type="topic_group" if chat_mode == "topic" else chat_mode,
+                )
+            except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+                return False
+            if registered is not True:
+                return False
+        try:
+            self._message_linker.register_origin(message_id, tenant_key=tenant_key)
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+        return True
+
     def _get_chat_mode(self, chat_id: str) -> str | None:
         """Read structural chat mode from the official Chat API.
 
@@ -2626,8 +2705,21 @@ class FeishuWSClient:
         pass
 
     def _handle_bot_deleted(self, data):
-        """确认主 Bot 的群移除事件，避免飞书因无处理器持续重投。"""
-        pass
+        """Retire local Slock state after the main Bot leaves a group."""
+
+        event = getattr(data, "event", None)
+        chat_id = getattr(event, "chat_id", "")
+        if not isinstance(chat_id, str) or not chat_id.startswith("oc_"):
+            return
+        manager = self._slock_engine_manager
+        try:
+            manager.retire_deleted_chat(chat_id)
+        except Exception:
+            logger.exception(
+                "failed to retire deleted Slock chat=%s",
+                chat_id[:12],
+            )
+            raise
 
     # ==================================================================
     # WebSocket lifecycle

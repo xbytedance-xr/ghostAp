@@ -176,7 +176,7 @@ def build_empty_state_card(
     ]
     if guide_buttons:
         elements.append({"tag": "hr"})
-        elements.append(build_responsive_layout(guide_buttons))
+        elements.extend(build_responsive_layout(guide_buttons))
     return build_card_wrapper(
         header_title=title,
         header_template="grey",

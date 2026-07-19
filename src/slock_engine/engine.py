@@ -739,6 +739,13 @@ class SlockEngine(BaseEngine):
                 bootstrap_ok = True
                 break
 
+            if self._task_queue.size() == 0:
+                logger.info(
+                    "Bootstrap registry empty with no queued tasks; "
+                    "dispatch loop entering standby",
+                )
+                break
+
             if attempt < max_retries:
                 backoff = min(2 ** (attempt + 1), 30)
                 logger.warning(

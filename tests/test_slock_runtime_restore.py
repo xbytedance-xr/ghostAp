@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 import pytest
 
 _acp_available = pytest.importorskip("acp", reason="acp package not installed")
 
-from src.slock_engine.manager import SlockEngineManager  # noqa: E402
+from src.slock_engine.manager import (  # noqa: E402
+    SlockEngineManager,
+    SlockEngineResolutionError,
+)
+from src.slock_engine.models import SlockChannel  # noqa: E402
 
 
 def _write_marker(storage_base_path: str, channel_id: str, data: dict) -> str:
@@ -163,6 +168,213 @@ class TestRestoreFromDiskErrorHandling:
 
         assert restored == 0
         assert manager.is_managed_chat("oc_bad") is False
+
+
+class TestDeletedChatRetirementRecovery:
+    class _Engine:
+        def __init__(self, *, deactivate_failures: int = 0, cleanup_failures: int = 0):
+            self.root_path = "/project"
+            self.channel = object()
+            self.deactivate_failures = deactivate_failures
+            self.cleanup_failures = cleanup_failures
+            self.deactivate_calls = 0
+            self.cleanup_calls = 0
+
+        def deactivate(self):
+            self.deactivate_calls += 1
+            self.channel = None
+            if self.deactivate_failures:
+                self.deactivate_failures -= 1
+                raise RuntimeError("deactivate interrupted")
+
+        def cleanup(self):
+            self.cleanup_calls += 1
+            if self.cleanup_failures:
+                self.cleanup_failures -= 1
+                raise RuntimeError("cleanup interrupted")
+
+    @staticmethod
+    def _manager_with_engine(tmp_path, engine):
+        manager = SlockEngineManager(storage_base_path=str(tmp_path / "slock"))
+        key = "oc_deleted:/project"
+        manager._engines[key] = engine
+        manager._chat_keys["oc_deleted"] = {key}
+        manager.register_managed_chat("oc_deleted")
+        return manager
+
+    def test_redelivery_retries_engine_whose_deactivate_cleared_channel(self, tmp_path):
+        engine = self._Engine(deactivate_failures=1)
+        manager = self._manager_with_engine(tmp_path, engine)
+
+        with pytest.raises(RuntimeError, match="deactivate interrupted"):
+            manager.retire_deleted_chat("oc_deleted")
+
+        assert manager.list_engines("oc_deleted") == [engine]
+        assert engine.channel is None
+        manager.retire_deleted_chat("oc_deleted")
+        assert manager.list_engines("oc_deleted") == []
+        assert manager.is_managed_chat("oc_deleted") is False
+        assert engine.deactivate_calls == 2
+
+    def test_redelivery_retries_engine_whose_remove_cleanup_failed(self, tmp_path):
+        engine = self._Engine(cleanup_failures=1)
+        manager = self._manager_with_engine(tmp_path, engine)
+
+        with pytest.raises(RuntimeError, match="cleanup interrupted"):
+            manager.retire_deleted_chat("oc_deleted")
+
+        assert manager.list_engines("oc_deleted") == [engine]
+        manager.retire_deleted_chat("oc_deleted")
+        assert manager.list_engines("oc_deleted") == []
+        assert engine.cleanup_calls == 2
+
+    def test_retirement_blocks_and_rejects_concurrent_reactivation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        manager = SlockEngineManager(storage_base_path=str(tmp_path / "slock"))
+        archive_entered = threading.Event()
+        release_archive = threading.Event()
+        retirement_done = threading.Event()
+        activation_done = threading.Event()
+        activation_errors: list[BaseException] = []
+
+        def blocking_archive(_chat_id: str):
+            archive_entered.set()
+            assert release_archive.wait(timeout=2)
+            return None
+
+        monkeypatch.setattr(manager, "archive_managed_chat_marker", blocking_archive)
+
+        def retire():
+            manager.retire_deleted_chat("oc_deleted")
+            retirement_done.set()
+
+        def reactivate():
+            try:
+                manager.get_or_create_activated(
+                    "oc_deleted",
+                    str(tmp_path),
+                    SlockChannel(channel_id="oc_deleted"),
+                    engine_name="Slock",
+                )
+            except BaseException as exc:  # captured for the test thread
+                activation_errors.append(exc)
+            finally:
+                activation_done.set()
+
+        retirement_thread = threading.Thread(target=retire)
+        activation_thread = threading.Thread(target=reactivate)
+        retirement_thread.start()
+        assert archive_entered.wait(timeout=2)
+        activation_thread.start()
+
+        assert activation_done.wait(timeout=0.1) is False
+        release_archive.set()
+        retirement_thread.join(timeout=2)
+        activation_thread.join(timeout=2)
+
+        assert retirement_done.is_set()
+        assert activation_done.is_set()
+        assert len(activation_errors) == 1
+        assert isinstance(activation_errors[0], SlockEngineResolutionError)
+        assert manager.list_engines("oc_deleted") == []
+        assert manager.is_managed_chat("oc_deleted") is False
+
+
+class TestActivatedBindingPublication:
+    class _Engine:
+        engine_name = "Coco"
+        _agent_type = "coco"
+        _model_name = None
+        is_running = False
+
+        def __init__(self, *, activation_error: BaseException | None = None):
+            self.channel = None
+            self.activation_error = activation_error
+            self.activation_entered = threading.Event()
+            self.release_activation = threading.Event()
+            self.deactivate_calls = 0
+            self.cleanup_calls = 0
+
+        def activate_channel(self, channel):
+            self.channel = channel
+            self.activation_entered.set()
+            assert self.release_activation.wait(timeout=2)
+            if self.activation_error is not None:
+                raise self.activation_error
+
+        def deactivate(self):
+            self.deactivate_calls += 1
+            self.channel = None
+
+        def cleanup(self):
+            self.cleanup_calls += 1
+
+    @staticmethod
+    def _manager_with_created_engine(tmp_path, monkeypatch, engine):
+        manager = SlockEngineManager(storage_base_path=str(tmp_path / "slock"))
+        monkeypatch.setattr(manager, "_create_engine", lambda **_kwargs: engine)
+        return manager
+
+    def test_activation_failure_rolls_back_uncommitted_engine(self, tmp_path, monkeypatch):
+        engine = self._Engine(activation_error=OSError("marker write failed"))
+        engine.release_activation.set()
+        manager = self._manager_with_created_engine(tmp_path, monkeypatch, engine)
+
+        with pytest.raises(OSError, match="marker write failed"):
+            manager.get_or_create_activated(
+                "oc_failed",
+                str(tmp_path),
+                SlockChannel(channel_id="oc_failed"),
+            )
+
+        assert manager.get_activated_engine("oc_failed") is None
+        assert manager.list_engines("oc_failed") == []
+        assert manager.is_managed_chat("oc_failed") is False
+        assert engine.channel is None
+        assert engine.deactivate_calls == 1
+        assert engine.cleanup_calls == 1
+
+    def test_reader_cannot_observe_binding_before_activation_commits(self, tmp_path, monkeypatch):
+        engine = self._Engine()
+        manager = self._manager_with_created_engine(tmp_path, monkeypatch, engine)
+        activation_done = threading.Event()
+        reader_done = threading.Event()
+        reader_results: list[object] = []
+
+        def activate():
+            manager.get_or_create_activated(
+                "oc_pending",
+                str(tmp_path),
+                SlockChannel(channel_id="oc_pending"),
+            )
+            activation_done.set()
+
+        def read():
+            reader_results.append(manager.get_activated_engine("oc_pending"))
+            reader_done.set()
+
+        activation_thread = threading.Thread(target=activate)
+        reader_thread = threading.Thread(target=read)
+        activation_thread.start()
+        assert engine.activation_entered.wait(timeout=2)
+        reader_thread.start()
+        try:
+            assert reader_done.wait(timeout=0.1) is False
+        finally:
+            engine.release_activation.set()
+        activation_thread.join(timeout=2)
+        reader_thread.join(timeout=2)
+
+        assert activation_done.is_set()
+        assert reader_done.is_set()
+        assert reader_results == [engine]
+        assert manager.is_managed_chat("oc_pending") is True
+
+
+class TestRestoreFromDiskAdditionalErrorHandling:
 
     def test_skips_missing_channel_id(self, tmp_path):
         root = str(tmp_path)

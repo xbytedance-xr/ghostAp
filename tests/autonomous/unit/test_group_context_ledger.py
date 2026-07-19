@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,6 +89,98 @@ def test_main_and_employee_bot_observations_deduplicate_without_rebinding_author
             transport_event_id="evt_forged",
             payload=_payload("forged"),
         )
+    store.close()
+    writer.close()
+
+
+def test_main_and_two_employee_apps_share_one_canonical_owner_event(
+    tmp_path: Path,
+) -> None:
+    """App-scoped Open IDs for one union identity must not conflict."""
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+    from src.autonomous.provisioning.hire_state import HirePhase
+
+    writer, store, ledger = _ledger(tmp_path)
+    ledger.publish(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        thread_id="",
+        message_id="om_shared",
+        transport_principal_id="main_bot",
+        transport_event_id="evt_main",
+        payload=GroupEventPayload(
+            sender_id="ou_main_owner",
+            sender_id_type="open_id",
+            sender_type="user",
+            sender_tenant_key="tenant_1",
+            text="ordinary group task",
+            timestamp=1.0,
+        ),
+    )
+    records = {}
+    payloads = {}
+    states = []
+    for index in (1, 2):
+        acceptance_id = f"acc_employee_{index}"
+        agent_id = f"agt_employee_{index}"
+        records[acceptance_id] = SimpleNamespace(
+            metadata=SimpleNamespace(
+                tenant_key="tenant_1",
+                agent_id=agent_id,
+                bot_principal_id=f"bot_employee_{index}",
+                event_id=f"evt_employee_{index}",
+                chat_id="oc_team",
+                message_id="om_shared",
+                thread_root_message_id="",
+                sender_principal_id=f"ou_employee_app_{index}",
+            )
+        )
+        payloads[acceptance_id] = SimpleNamespace(
+            normalized_parts=(
+                {
+                    "type": "message",
+                    "message_type": "text",
+                    "chat_type": "group",
+                    "content": {"text": "ordinary group task"},
+                    "sender_id": f"ou_employee_app_{index}",
+                    "sender_union_id": "on_owner",
+                    "sender_id_type": "open_id",
+                    "sender_type": "user",
+                    "sender_tenant_key": "tenant_1",
+                    "feishu_thread_id": "",
+                },
+            )
+        )
+        states.append(
+            SimpleNamespace(
+                tenant_key="tenant_1",
+                agent_id=agent_id,
+                phase=HirePhase.ACTIVE,
+                requester_principal_id="ou_main_owner",
+                requester_union_id="on_owner",
+            )
+        )
+
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = SimpleNamespace(  # type: ignore[assignment]  # noqa: SLF001
+        state=SimpleNamespace(by_acceptance_id=records),
+        get_payload=payloads.__getitem__,
+    )
+    runtime._service = SimpleNamespace(  # type: ignore[assignment]  # noqa: SLF001
+        synchronize_projection=lambda: None,
+        list_states=lambda: tuple(states),
+    )
+    runtime._group_ledger = ledger  # noqa: SLF001
+
+    assert runtime._record_employee_ingress_group_event("acc_employee_1") is True  # noqa: SLF001
+    assert runtime._record_employee_ingress_group_event("acc_employee_2") is True  # noqa: SLF001
+    canonical = ledger.window(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        current_message_id="om_shared",
+    )
+    assert len(canonical.records) == 1
+    assert canonical.records[0].transport_principal_id == "main_bot"
     store.close()
     writer.close()
 

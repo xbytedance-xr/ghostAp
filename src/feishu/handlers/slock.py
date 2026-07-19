@@ -1549,10 +1549,6 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         sender_open_id = get_current_sender_id() or ""
 
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-        engine = manager.get_or_create(
-            chat_id, root_path, engine_name=engine_name,
-        )
-
         # Create and activate channel
         channel = SlockChannel(
             channel_id=chat_id,
@@ -1560,12 +1556,15 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             team_name=project.project_name if project else "Team",
             owner_id=sender_open_id,
         )
-        engine.activate_channel(channel)
+        engine = manager.get_or_create_activated(
+            chat_id,
+            root_path,
+            channel,
+            engine_name=engine_name,
+        )
 
         # Bootstrap default roles asynchronously (non-blocking)
         self._bootstrap_default_roles_if_configured(engine, channel.channel_id, chat_id)
-
-        manager.register_managed_chat(chat_id)
 
         # Wire UI callbacks for escalation timeout notifications
         engine.set_escalation_ui_callbacks(
@@ -1898,8 +1897,6 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             engine_name = self.get_engine_name(
                 new_chat_id, project_id=(project.project_id if project else None)
             )
-            engine = manager.get_or_create(new_chat_id, root_path, engine_name=engine_name)
-
             # Step 4: Activate channel (creates workspace directory + marker)
             channel = SlockChannel(
                 channel_id=new_chat_id,
@@ -1907,7 +1904,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 team_name=name,
                 owner_id=sender_open_id,
             )
-            engine.activate_channel(channel)
+            engine = manager.get_or_create_activated(
+                new_chat_id,
+                root_path,
+                channel,
+                engine_name=engine_name,
+            )
 
             # Bootstrap default roles asynchronously (non-blocking)
             self._bootstrap_default_roles_if_configured(engine, channel.channel_id, new_chat_id)
@@ -1917,9 +1919,6 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 update_card_fn=self.update_card,
                 send_text_fn=self.send_text_to_chat,
             )
-
-            # Step 5: Register managed chat for event routing
-            manager.register_managed_chat(new_chat_id)
 
             # Step 6: Send welcome card in the new group
             from ...slock_engine.card_templates import build_welcome_card
@@ -2106,9 +2105,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 if archived_marker:
                     manager.restore_archived_chat_marker(target_chat_id, archived_marker)
                 manager.discard_engine_for_recovery(target_chat_id, root_path)
-                restored_engine = manager.get_or_create(target_chat_id, root_path, engine_name="Slock")
-                restored_engine.activate_channel(channel_snapshot)
-                manager.register_managed_chat(target_chat_id)
+                manager.get_or_create_activated(
+                    target_chat_id,
+                    root_path,
+                    channel_snapshot,
+                    engine_name="Slock",
+                )
                 return True
             except Exception:
                 logger.exception("dissolve_team: 本地团队补偿恢复失败 chat=%s", target_chat_id)

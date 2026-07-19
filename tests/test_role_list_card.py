@@ -13,6 +13,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from src.slock_engine.card_templates.common import (
+    build_callback_button,
+    build_empty_state_card,
+)
 from src.slock_engine.card_templates.role import build_role_list_card
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
 
@@ -186,3 +190,20 @@ class TestRoleListCardEmpty:
 
         assert "/new-role" in serialized
         assert "暂无角色" in serialized
+
+    def test_handler_empty_state_buttons_are_top_level_card_elements(self):
+        """Feishu rejects a list nested directly in body.elements."""
+        button = build_callback_button(
+            "➕ 创建角色",
+            "slock_new_role_hint",
+            channel_id="oc_team",
+            button_type="primary",
+        )
+
+        card = build_empty_state_card(
+            "👥 角色列表",
+            "当前没有角色",
+            guide_buttons=[button],
+        )
+
+        assert all(isinstance(element, dict) for element in card["body"]["elements"])
