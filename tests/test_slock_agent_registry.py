@@ -195,6 +195,7 @@ class TestAgentRegistry:
             data = json.load(f)
         assert data["name"] == "JsonCheck"
 
+    @pytest.mark.slow
     def test_large_legacy_directory_is_scanned_once_then_uses_durable_index(
         self, tmp_path, monkeypatch
     ):

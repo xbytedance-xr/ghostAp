@@ -798,6 +798,7 @@ class TestResolveAgentSpec:
     def test_coco_fails_after_update(self, monkeypatch):
         """resolve_agent_spec raises after auto-update fails."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
+        from src.acp.provider import ToolRegistry
         from src.acp.providers import tool_registry
 
         class FakeProvider:
@@ -811,29 +812,14 @@ class TestResolveAgentSpec:
                 return False
 
         # Pre-populate cache so it's a synchronous failure in get_serve_command
-        monkeypatch.setattr(tool_registry, "get_provider", lambda name: FakeProvider())
+        # Patch the class boundary. Patching this inherited method on the singleton
+        # makes monkeypatch restore it as an instance attribute, which then shadows
+        # later class-level patches and leaks ordering into the next test.
+        monkeypatch.setattr(ToolRegistry, "get_provider", lambda _self, _name: FakeProvider())
         tool_registry._set_availability_cache("coco", False)
 
         with pytest.raises(RuntimeError, match="not available for ACP mode|does not appear to support ACP server mode"):
             sa.resolve_agent_spec("coco")
-
-    def test_claude_with_auto_update(self, monkeypatch):
-        """resolve_agent_spec returns claude spec after successful auto-update."""
-        monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
-        from src.acp.providers import tool_registry
-
-        class FakeProvider:
-            def __init__(self):
-                self.name = "claude"
-            def get_serve_command(self, model_name=None):
-                return "claude", ["acp", "serve"]
-            def get_fallback_command(self, model_name=None):
-                return None
-            def check_availability(self, model_name=None):
-                return True
-
-        monkeypatch.setattr(tool_registry, "get_provider", lambda name: FakeProvider())
-        assert sa.resolve_agent_spec("claude") == ("claude", ["acp", "serve"])
 
     def test_config_override_bypasses_detection(self, monkeypatch):
         """Config overrides skip detection and auto-update entirely."""

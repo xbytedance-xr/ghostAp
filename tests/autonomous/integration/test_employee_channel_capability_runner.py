@@ -19,6 +19,7 @@ from src.autonomous.ingress.sdk_capability import (
 _RUNNER_TIMEOUT_SECONDS = 150
 
 
+@pytest.mark.slow
 @pytest.mark.timeout(_RUNNER_TIMEOUT_SECONDS)
 def test_runner_collects_exact_nodes_and_writes_development_evidence(
     tmp_path: Path,
@@ -50,6 +51,7 @@ def test_runner_collects_exact_nodes_and_writes_development_evidence(
     assert evidence.promotable is False
 
 
+@pytest.mark.slow
 def test_runner_rejects_repository_output(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[3]
     forbidden = repository / ".employee-channel-capability.json"

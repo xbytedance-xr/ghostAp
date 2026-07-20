@@ -12,6 +12,8 @@ from __future__ import annotations
 from concurrent.futures import Future
 from unittest.mock import MagicMock
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
@@ -95,6 +97,7 @@ def _make_engine(execute_result="Agent result text", execute_side_effect=None):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestPlaceholderCardSentImmediately:
     """Verify that send_card_to_chat is called with a placeholder containing processing text."""
 
@@ -123,6 +126,7 @@ class TestPlaceholderCardSentImmediately:
         assert first_call[0][0] == "chat-001"
 
 
+@pytest.mark.slow
 class TestExecutorSubmitCalled:
     """Verify that the engine's executor.submit is invoked for async execution."""
 
@@ -146,6 +150,7 @@ class TestExecutorSubmitCalled:
         handler.send_card_to_chat.assert_not_called()
 
 
+@pytest.mark.slow
 class TestSuccessUpdatesCard:
     """After async execution completes successfully, update_card should be called."""
 
@@ -186,6 +191,7 @@ class TestSuccessUpdatesCard:
         assert update_call[0][0] == "placeholder-msg-001"
 
 
+@pytest.mark.slow
 class TestFailureUpdatesCardWithError:
     """If execution raises an exception, update_card should show error content."""
 
@@ -239,6 +245,7 @@ class TestCommandRedirect:
         handler.send_card_to_chat.assert_not_called()
 
 
+@pytest.mark.slow
 class TestAtMentionRouting:
     """Messages with @AgentName should try to route to a specific agent."""
 

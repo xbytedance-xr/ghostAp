@@ -12,6 +12,8 @@ import json
 from concurrent.futures import Future
 from unittest.mock import ANY, MagicMock, patch
 
+import pytest
+
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
 from src.slock_engine.slash_commands import is_slock_command
 
@@ -151,6 +153,7 @@ class TestE2EHandlerToEngine:
         engine.registry.find_by_name.assert_called_with("Coder-E2E", channel_id="chat_e2e")
         engine._execute_agent.assert_called_once_with(agent, "@Coder-E2E please review this code", ANY)
 
+    @pytest.mark.slow
     def test_smart_routing_when_no_mention(self):
         """AC-05: Messages without @mention go through explicit smart routing."""
         handler = self._make_handler_with_engine()

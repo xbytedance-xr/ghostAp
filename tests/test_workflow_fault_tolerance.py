@@ -22,6 +22,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.workflow_engine.constants import (
     AGENT_CALL_TIMEOUT_S,
     MAX_QUEUE_SIZE,
@@ -141,6 +143,7 @@ class TestAgentRetryLogic(unittest.TestCase):
         # send_prompt should be called twice (initial + 1 retry)
         self.assertEqual(mock_session.send_prompt.call_count, 2)
 
+    @pytest.mark.slow
     def test_retry_limit_exceeded(self):
         """Verify after max retries, the call fails with the last error.
 

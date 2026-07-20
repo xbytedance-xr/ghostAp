@@ -225,6 +225,7 @@ class TestManagedChatMessageRouting:
         handler.send_card_to_chat = MagicMock()
         return handler
 
+    @pytest.mark.slow
     def test_normal_message_calls_engine_execute(self):
         """AC3: Normal text in managed chat routes to the selected agent."""
         handler = self._make_handler()
@@ -314,6 +315,7 @@ class TestAtMentionRouting:
         engine.registry.find_by_name.assert_called_with("Coder", channel_id="chat_123")
         engine._execute_agent.assert_called_once_with(target_agent, "@Coder please fix the bug", ANY)
 
+    @pytest.mark.slow
     def test_at_mention_unknown_agent_falls_to_smart_route(self):
         """If @UnknownAgent doesn't match, fall through to explicit smart routing."""
         from src.feishu.handlers.slock import SlockHandler

@@ -3,7 +3,6 @@
 Covers:
 - Missing action routing (slock_cmd_task_status, slock_cmd_role_info, slock_cmd_role_remove, slock_cmd_team_status, slock_cmd_memory, slock_cmd_panel_extended)
 - Parameter hint branches (task_assign, role_info, role_remove, team_status, memory, discuss, council)
-- Consistency with TestBuildCommandPanelCard (button count >= 4, action prefix slock_, channel_id propagation)
 """
 
 from __future__ import annotations
@@ -12,61 +11,8 @@ import json
 from unittest.mock import MagicMock
 
 
-def _collect_buttons(card: dict) -> list[dict]:
-    buttons: list[dict] = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            if node.get("tag") == "button":
-                buttons.append(node)
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(card)
-    return buttons
-
-
 class TestSlockCmdPanelDispatch:
     """AC01 dispatch tests for slock_cmd_* button routing."""
-
-    # ------------------------------------------------------------------
-    # Consistency: build_command_panel_card invariants
-    # ------------------------------------------------------------------
-
-    def test_panel_card_has_at_least_4_buttons(self):
-        from src.slock_engine.card_templates import build_command_panel_card
-
-        card = build_command_panel_card(channel_id="test_chat")
-        buttons = _collect_buttons(card)
-        assert len(buttons) >= 4, f"Expected >=4 buttons, got {len(buttons)}"
-
-    def test_panel_buttons_have_slock_prefix(self):
-        from src.slock_engine.card_templates import build_command_panel_card
-
-        card = build_command_panel_card(channel_id="test_chat")
-        buttons = _collect_buttons(card)
-        for btn in buttons:
-            action = btn.get("value", {}).get("action", "")
-            assert action.startswith("slock_"), f"Button action {action!r} missing slock_ prefix"
-
-    def test_panel_channel_id_propagated(self):
-        from src.slock_engine.card_templates import build_command_panel_card
-
-        card = build_command_panel_card(channel_id="my_channel")
-        buttons = _collect_buttons(card)
-        for btn in buttons:
-            assert btn["value"]["channel_id"] == "my_channel"
-
-    def test_panel_schema_and_header(self):
-        from src.slock_engine.card_templates import build_command_panel_card
-
-        card = build_command_panel_card()
-        assert card["schema"] == "2.0"
-        assert card["config"]["wide_screen_mode"] is True
-        assert "Slock" in card["header"]["title"]["content"]
 
     # ------------------------------------------------------------------
     # Routing: no-param actions hit handlers

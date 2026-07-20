@@ -234,6 +234,7 @@ class TestTaskFirstExecution:
         handler.update_card = MagicMock(return_value=True)
         return handler
 
+    @pytest.mark.slow
     def test_task_first_creates_task_and_executes(self):
         """AC-8: Non-command message routes to agent via _execute_agent."""
         handler = self._make_handler()
@@ -266,6 +267,7 @@ class TestTaskFirstExecution:
         engine.router.route_message.assert_called_once_with("帮我写一个快速排序函数", [mock_agent])
         engine._execute_agent.assert_called_once_with(mock_agent, "帮我写一个快速排序函数", ANY)
 
+    @pytest.mark.slow
     def test_auto_retry_on_failure(self):
         """When primary agent returns None, no automatic retry in current implementation."""
         handler = self._make_handler()

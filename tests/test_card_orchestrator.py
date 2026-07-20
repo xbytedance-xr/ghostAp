@@ -985,6 +985,7 @@ class TestReset:
 class TestCloseTimeout:
     """Tests for close() timeout protection."""
 
+    @pytest.mark.slow
     def test_close_survives_blocking_bridge(self):
         """close() completes even if bridge.close_open_blocks() hangs."""
         import time

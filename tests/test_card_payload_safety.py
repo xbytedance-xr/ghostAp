@@ -37,6 +37,7 @@ class TestCardPayloadSafety(unittest.TestCase):
         # Verify text was truncated (capped at 8000 + suffix)
         self.assertTrue(len(truncated_text) < 20000)
         self.assertTrue(truncated_text.endswith("…(已截断)"))
+        self.assertTrue(any("内容过长" in str(element) for element in truncated_card["elements"]))
 
     def test_recursive_truncation(self):
         """Test nested objects are processed — uses the >10K fallback string cap."""

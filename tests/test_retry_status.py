@@ -1,73 +1,23 @@
-"""Tests for src/spec_engine/retry_status.py — RetryStatus enum and RetryEvent dataclass."""
+"""Behavioral contracts for spec-engine retry status emission."""
 
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
-from src.spec_engine.retry_status import RetryEvent, RetryStatus
+from src.spec_engine.retry_status import RetryStatus
 
 
 class TestRetryStatusEnum:
-    """RetryStatus enum completeness and value stability."""
+    """Persisted/transported enum values must remain stable."""
 
-    def test_has_five_members(self):
-        assert len(RetryStatus) == 5
-
-    def test_expected_members(self):
-        expected = {"WAITING", "EXECUTING", "SUCCEEDED", "EXHAUSTED", "NO_RETRY"}
-        actual = {m.name for m in RetryStatus}
-        assert actual == expected
-
-    def test_values_are_strings(self):
-        for member in RetryStatus:
-            assert isinstance(member.value, str)
-
-
-class TestRetryEvent:
-    """RetryEvent dataclass construction and immutability."""
-
-    def test_construction(self):
-        event = RetryEvent(status=RetryStatus.WAITING, detail="7")
-        assert event.status == RetryStatus.WAITING
-        assert event.detail == "7"
-
-    def test_frozen(self):
-        event = RetryEvent(status=RetryStatus.EXECUTING, detail="1/2")
-        with pytest.raises(Exception):  # FrozenInstanceError
-            event.status = RetryStatus.SUCCEEDED  # type: ignore[misc]
-
-    def test_equality(self):
-        a = RetryEvent(status=RetryStatus.SUCCEEDED, detail="")
-        b = RetryEvent(status=RetryStatus.SUCCEEDED, detail="")
-        assert a == b
-
-    def test_different_detail(self):
-        a = RetryEvent(status=RetryStatus.WAITING, detail="5")
-        b = RetryEvent(status=RetryStatus.WAITING, detail="10")
-        assert a != b
-
-
-class TestRendererMapping:
-    """Verify spec_renderer's RetryStatus → UI_TEXT mapping covers all enum values."""
-
-    def test_mapping_covers_all_statuses(self):
-        from src.card.ui_text import UI_TEXT
-
-        # The mapping used in spec_renderer (replicated here for verification).
-        # SUCCEEDED is handled by early-return (no card push), so it has no UI_TEXT mapping.
-        mapping = {
-            RetryStatus.WAITING: "retry_waiting",
-            RetryStatus.EXECUTING: "retry_executing",
-            RetryStatus.EXHAUSTED: "retry_exhausted",
-            RetryStatus.NO_RETRY: "retry_no_retry",
+    def test_serialized_values(self):
+        assert {member.name: member.value for member in RetryStatus} == {
+            "WAITING": "waiting",
+            "EXECUTING": "executing",
+            "SUCCEEDED": "succeeded",
+            "EXHAUSTED": "exhausted",
+            "NO_RETRY": "no_retry",
         }
-        # Every mapped status has a corresponding UI_TEXT key
-        for status, key in mapping.items():
-            assert key in UI_TEXT, f"UI_TEXT['{key}'] missing"
-        # SUCCEEDED is intentionally excluded from UI_TEXT (never rendered)
-        assert "retry_succeeded" not in UI_TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -337,4 +287,3 @@ class TestReviewRetryNoCardImport:
                 assert not node.module.startswith("src.card") and "card" not in node.module.split("."), (
                     f"review_retry.py must not import from card layer, found: from {node.module}"
                 )
-

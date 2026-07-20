@@ -8,18 +8,12 @@ import tempfile
 
 import pytest
 
-from src.autonomous.verifier.verifier import (
-    OracleConfig,
-    OracleRunner,
-    VerificationAttestation,
-    VerificationReport,
-    Verifier,
-)
 from src.autonomous.domain import (
     GoalCriterion,
     OracleType,
     VerificationResult,
 )
+from src.autonomous.verifier.verifier import OracleRunner, Verifier
 
 
 class FakeJournal:
@@ -73,6 +67,7 @@ class TestOracleRunner:
         assert exit_code == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
     async def test_run_command_timeout(self) -> None:
         runner = OracleRunner(workspace_dir="/tmp")
         with pytest.raises(asyncio.TimeoutError):
@@ -159,6 +154,7 @@ class TestVerifier:
         assert "No command specified" in att.reason
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
     async def test_verify_command_timeout(self, verifier: Verifier) -> None:
         criterion = _make_criterion(
             oracle_type=OracleType.COMMAND,

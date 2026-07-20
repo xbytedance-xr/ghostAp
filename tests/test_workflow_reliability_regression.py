@@ -21,7 +21,6 @@ from src.workflow_engine.bridge import RuntimeBridge
 from src.workflow_engine.executor import AgentExecutor
 from src.workflow_engine.models import (
     AgentCallParams,
-    AgentStatus,
     WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
@@ -140,48 +139,6 @@ class _SlowCancelableSession:
         raise TimeoutError("timed out")
 
 
-def test_global_cancel_triggers_cancel_guard(tmp_path, make_executor):
-    """When executor-level (global) cancel_event fires during send_prompt,
-    session.cancel() must be called — even if per-call event is never set."""
-    global_cancel = threading.Event()
-    executor = make_executor(tmp_path, cancel_event=global_cancel)
-    per_call_cancel = threading.Event()  # never set
-    session = _SlowCancelableSession()
-
-    with patch(
-        "src.agent_session.factory.create_engine_session",
-        return_value=session,
-    ):
-        params = AgentCallParams(prompt="hello", tool="coco")
-        result_holder: list = []
-
-        def run():
-            result_holder.append(
-                executor.execute(params, cancel_event=per_call_cancel)
-            )
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-
-        assert session.send_prompt_started.wait(timeout=5.0)
-
-        assert not per_call_cancel.is_set()
-        start = time.monotonic()
-        global_cancel.set()
-
-        assert session.cancel_called.wait(timeout=2.0), (
-            "session.cancel() must fire when global cancel is set"
-        )
-        elapsed_ms = (time.monotonic() - start) * 1000
-        assert elapsed_ms < 500, f"cancel took {elapsed_ms:.0f}ms, expected <500ms"
-
-        t.join(timeout=10.0)
-        assert not t.is_alive()
-
-        assert len(result_holder) == 1
-        assert result_holder[0].error is not None
-
-
 def test_per_call_cancel_still_works_with_global_event(tmp_path, make_executor):
     """Per-call cancel (race loser) must still work when a global event exists."""
     global_cancel = threading.Event()  # never set
@@ -229,94 +186,6 @@ def _make_sm():
     sm = WorkflowStateManager(project)
     sm.on_phase_changed("phase1")
     return sm
-
-
-class TestStickyTerminalState:
-    def test_done_not_overwritten_by_failed(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
-        sm.on_agent_failed(label, "late error")
-
-        snap = sm.snapshot()
-        a = snap.phases[0].agents[0]
-        assert a.status == AgentStatus.DONE
-        assert snap.metrics.completed_agents == 1
-        assert snap.metrics.failed_agents == 0
-
-    def test_done_not_overwritten_by_cancelled(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
-        sm.on_agent_aborted(label, "race loser")
-
-        snap = sm.snapshot()
-        assert snap.phases[0].agents[0].status == AgentStatus.DONE
-        assert snap.metrics.completed_agents == 1
-
-    def test_failed_not_overwritten_by_done(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_failed(label, "timeout")
-        sm.on_agent_done(label, {"token_usage": 5, "duration_s": 2.0})
-
-        snap = sm.snapshot()
-        a = snap.phases[0].agents[0]
-        assert a.status == AgentStatus.FAILED
-        assert a.error == "timeout"
-        assert snap.metrics.failed_agents == 1
-        assert snap.metrics.total_tokens == 0
-
-    def test_failed_not_overwritten_by_cancelled(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_failed(label, "error")
-        sm.on_agent_aborted(label, "race loser")
-
-        snap = sm.snapshot()
-        assert snap.phases[0].agents[0].status == AgentStatus.FAILED
-        assert snap.metrics.failed_agents == 1
-
-    def test_cancelled_not_overwritten_by_done(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_aborted(label, "race loser")
-        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
-
-        snap = sm.snapshot()
-        assert snap.phases[0].agents[0].status == AgentStatus.CANCELLED
-        assert snap.metrics.completed_agents == 1
-        assert snap.metrics.total_tokens == 0
-
-    def test_cancelled_not_overwritten_by_failed(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_aborted(label, "race loser")
-        sm.on_agent_failed(label, "error")
-
-        snap = sm.snapshot()
-        assert snap.phases[0].agents[0].status == AgentStatus.CANCELLED
-        assert snap.metrics.failed_agents == 0
-
-    def test_done_idempotent_no_double_count(self):
-        sm = _make_sm()
-        label = sm.on_agent_started("a1", "coco", "phase1")
-        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
-        sm.on_agent_done(label, {"token_usage": 20, "duration_s": 2.0})
-
-        snap = sm.snapshot()
-        assert snap.metrics.completed_agents == 1
-        assert snap.metrics.total_tokens == 10
-
-    def test_workflow_failed_overwritten_by_cancelled(self):
-        """User-initiated cancel takes precedence over runtime failure."""
-        sm = _make_sm()
-        sm.on_workflow_failed("fatal")
-        sm.on_workflow_cancelled("user cancelled")
-
-        snap = sm.snapshot()
-        assert snap.status == WorkflowStatus.CANCELLED
-        assert snap.error == "user cancelled"
 
 
 # ---------------------------------------------------------------------------

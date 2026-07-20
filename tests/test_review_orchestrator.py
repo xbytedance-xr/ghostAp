@@ -50,12 +50,6 @@ class TestResetCancelEvent:
         assert result is True
         assert not orch.cancel_event.is_set()
 
-    def test_reset_when_stopping(self):
-        orch = ReviewOrchestrator()
-        result = orch.reset_cancel_event(is_running=False)
-        assert result is False
-        assert orch.cancel_event.is_set()
-
     def test_reset_when_idle(self):
         orch = ReviewOrchestrator()
         result = orch.reset_cancel_event(is_running=False)

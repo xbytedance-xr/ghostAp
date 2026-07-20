@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 
 import pytest
 
 from src.autonomous.supervisor.supervisor import (
-    ChannelHealth,
     RecoveryReport,
     Supervisor,
     SupervisorState,
-    WorkerProcess,
     WorkerState,
 )
 
@@ -108,6 +105,7 @@ class TestSupervisorLifecycle:
 
 class TestWorkerManagement:
     @pytest.mark.asyncio
+    @pytest.mark.slow
     async def test_spawn_worker(self, supervisor: Supervisor, journal: FakeJournal) -> None:
         await supervisor.start()
         worker = await supervisor.spawn_worker(
@@ -128,6 +126,7 @@ class TestWorkerManagement:
         await supervisor.shutdown()
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
     async def test_max_workers_limit(self, supervisor: Supervisor) -> None:
         await supervisor.start()
 
@@ -154,6 +153,7 @@ class TestWorkerManagement:
         await supervisor.shutdown()
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
     async def test_heartbeat(self, supervisor: Supervisor) -> None:
         await supervisor.start()
         worker = await supervisor.spawn_worker(
@@ -170,6 +170,7 @@ class TestWorkerManagement:
         await supervisor.shutdown()
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
     async def test_check_workers_timeout(self, supervisor: Supervisor) -> None:
         await supervisor.start()
         worker = await supervisor.spawn_worker(

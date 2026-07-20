@@ -130,6 +130,7 @@ def _ipc_worker(base_dir: str, connection) -> None:
     writer.close()
 
 
+@pytest.mark.slow
 def test_ipc_ack_only_after_anchored_acceptance(tmp_path: Path) -> None:
     manifest = Phase3ImplementationManifest.load(PHASE3_IMPLEMENTATION_MANIFEST_PATH)
     gate = manifest.gate("EI-IPC-01")

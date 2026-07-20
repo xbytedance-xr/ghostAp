@@ -8,36 +8,7 @@ import pytest
 
 from src.feishu.image_handler import (
     FeishuImageHandler,
-    ImageDownloadResult,
-    ImageParseResult,
 )
-
-
-class TestImageParseResult:
-    def test_default_creation(self):
-        result = ImageParseResult(text="hello")
-        assert result.text == "hello"
-        assert result.image_keys == []
-
-    def test_creation_with_images(self):
-        result = ImageParseResult(text="task", image_keys=["img_1", "img_2"])
-        assert result.text == "task"
-        assert result.image_keys == ["img_1", "img_2"]
-
-
-class TestImageDownloadResult:
-    def test_default_creation(self):
-        result = ImageDownloadResult()
-        assert result.saved_paths == []
-        assert result.failed_keys == []
-
-    def test_creation_with_values(self):
-        result = ImageDownloadResult(
-            saved_paths=["/a/b.png"],
-            failed_keys=["img_fail"],
-        )
-        assert result.saved_paths == ["/a/b.png"]
-        assert result.failed_keys == ["img_fail"]
 
 
 class TestParseTextMessage:

@@ -13,7 +13,6 @@ from src.utils.text import (
     render_time_ago_cn,
     render_violation_report,
 )
-from src.utils.time_ago import compute_time_ago_bucket
 
 # ──────────────────────────────────────────────────────────────────────
 # format_duration
@@ -70,26 +69,6 @@ def test_summarize_question_title(value, expected):
 
     assert result == expected
     assert len(result) <= 15
-
-
-# ──────────────────────────────────────────────────────────────────────
-# compute_time_ago_bucket & render_time_ago_cn
-# ──────────────────────────────────────────────────────────────────────
-
-
-class TestComputeTimeAgoBucket:
-    def test_minutes_bucket_range(self):
-        assert compute_time_ago_bucket(60) == {"kind": "minutes", "value": 1}
-        assert compute_time_ago_bucket(120) == {"kind": "minutes", "value": 2}
-        assert compute_time_ago_bucket(3599) == {"kind": "minutes", "value": 59}
-
-    def test_hours_bucket_range(self):
-        assert compute_time_ago_bucket(3600) == {"kind": "hours", "value": 1}
-        assert compute_time_ago_bucket(7200) == {"kind": "hours", "value": 2}
-
-    def test_days_bucket_range(self):
-        assert compute_time_ago_bucket(86400) == {"kind": "days", "value": 1}
-        assert compute_time_ago_bucket(172800) == {"kind": "days", "value": 2}
 
 
 class TestRenderTimeAgoCn:

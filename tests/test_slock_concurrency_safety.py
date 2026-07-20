@@ -312,6 +312,7 @@ class TestResolvedEscalationCleansRetryCounts:
 class TestExecuteParallelPartialQueueFull:
     """execute_parallel gracefully handles partial QueueFullError during submit."""
 
+    @pytest.mark.slow
     def test_partial_queue_full_returns_none_for_rejected(self, tmp_path):
         """When some tasks are rejected, results dict has None for those task_ids."""
         engine = _make_engine(tmp_path)

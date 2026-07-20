@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
 
 # ============================================================
@@ -624,6 +626,7 @@ class TestExecuteAsyncHelper:
 class TestHandleMessageUsesExecuteAsync:
     """Verify that handle_message delegates to _execute_async."""
 
+    @pytest.mark.slow
     def test_handle_message_delegates(self):
         """Mock _execute_async on the handler, call handle_message, assert _execute_async was called."""
         handler = _make_handler()

@@ -169,10 +169,14 @@ def test_employee_registration_notifier_explains_pending_oauth_state(
     runtime = mock_ws_client._employee_department_runtime
     state = SimpleNamespace(
         message_id="msg_hire",
+        chat_id="chat_dm",
+        requester_principal_id="ou_admin",
+        tenant_key="tenant_test",
         employee_name="Atlas",
         intent_id="hire_intent_1",
     )
     mock_ws_client._reply_text = MagicMock()
+    mock_ws_client._get_chat_mode = MagicMock(return_value="p2p")
 
     runtime._service._on_registration_status(state, "polling")
 

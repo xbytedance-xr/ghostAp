@@ -469,6 +469,7 @@ def test_global_cancel_triggers_cancel_guard(tmp_path, make_executor):
         assert not t.is_alive(), "execute should complete"
 
 
+@pytest.mark.slow
 def test_global_cancel_interrupts_session_creation(tmp_path, make_executor):
     """Global cancel must interrupt session creation poll loop, not just
     the send_prompt phase.  Validates that the creation loop checks both

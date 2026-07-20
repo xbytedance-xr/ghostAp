@@ -77,10 +77,6 @@ class TestRedactSensitive:
     def test_empty_string(self):
         assert redact_sensitive("") == ""
 
-    def test_none_passthrough(self):
-        # redact_sensitive returns falsy input as-is
-        assert redact_sensitive("") == ""
-
     def test_mixed_secrets(self):
         text = (
             "DB_PASSWORD=supersecret "

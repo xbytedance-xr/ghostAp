@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 from src.autonomous.ingress.models import (
     EmployeeIngressAck,
     EmployeeIngressMetadata,

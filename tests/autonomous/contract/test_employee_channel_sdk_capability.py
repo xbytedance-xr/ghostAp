@@ -23,6 +23,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from websockets.sync.server import Server, serve
 
+pytestmark = pytest.mark.slow
+
 _PROCESS_WAIT_SECONDS = 5.0
 _ACK_BUDGET_SECONDS = 1.5
 _NO_EARLY_RESPONSE_SECONDS = _ACK_BUDGET_SECONDS

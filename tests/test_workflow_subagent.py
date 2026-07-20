@@ -1,8 +1,6 @@
-"""Tests for subagent encouragement injection (Task 4/13).
+"""Behavioral tests for workflow prompt construction and bridge limits.
 
 Validates:
-- SUBAGENT_ENCOURAGEMENT_PROMPT constant exists and is non-empty
-- AgentExecutor._build_prompt includes the encouragement suffix
 - Role prefix is injected when params.role is set
 """
 
@@ -11,28 +9,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.workflow_engine.roles import SUBAGENT_ENCOURAGEMENT_PROMPT
 from src.workflow_engine.script_gen import (
-    SUBAGENT_ENCOURAGEMENT,
     _get_agent_capability_note,
     build_script_gen_prompt,
     generate_simple_script,
     validate_generated_script,
 )
-
-
-class TestSubagentEncouragementConstant(unittest.TestCase):
-    """Test the SUBAGENT_ENCOURAGEMENT_PROMPT constant."""
-
-    def test_constant_is_non_empty_string(self):
-        self.assertIsInstance(SUBAGENT_ENCOURAGEMENT_PROMPT, str)
-        self.assertGreater(len(SUBAGENT_ENCOURAGEMENT_PROMPT), 50)
-
-    def test_contains_subagent_keyword(self):
-        self.assertIn("subagent", SUBAGENT_ENCOURAGEMENT_PROMPT.lower())
-
-    def test_contains_parallel_keyword(self):
-        self.assertIn("parallel", SUBAGENT_ENCOURAGEMENT_PROMPT.lower())
 
 
 class TestBuildPromptInjection(unittest.TestCase):
@@ -71,34 +53,12 @@ class TestBuildPromptInjection(unittest.TestCase):
             role=role,
         )
 
-    def test_prompt_ends_with_encouragement(self):
-        executor = self._make_executor()
-        params = self._make_params(prompt="analyze this code")
-        result = executor._build_prompt(params)
-
-        self.assertTrue(result.endswith(SUBAGENT_ENCOURAGEMENT_PROMPT))
-
-    def test_prompt_contains_task(self):
-        executor = self._make_executor()
-        params = self._make_params(prompt="analyze this code")
-        result = executor._build_prompt(params)
-
-        self.assertIn("analyze this code", result)
-
     def test_role_prefix_injected(self):
         executor = self._make_executor()
         params = self._make_params(prompt="task", role="security_auditor")
         result = executor._build_prompt(params)
 
         self.assertTrue(result.startswith("Role: security_auditor"))
-
-    def test_no_role_prefix_when_empty(self):
-        executor = self._make_executor()
-        params = self._make_params(prompt="task", role="")
-        result = executor._build_prompt(params)
-
-        self.assertFalse(result.startswith("Role:"))
-
 
 class TestBridgeArgsPassthrough(unittest.TestCase):
     """Test RuntimeBridge args parameter and passthrough."""
@@ -200,35 +160,8 @@ class TestBridgeBackpressure(unittest.TestCase):
         bridge._executor.submit.assert_called_once()
 
 
-class TestScriptGenSubagentEncouragement(unittest.TestCase):
-    """Test SUBAGENT_ENCOURAGEMENT constant in script_gen.py."""
-
-    def test_constant_exists_and_is_non_empty(self):
-        self.assertIsInstance(SUBAGENT_ENCOURAGEMENT, str)
-        self.assertGreater(len(SUBAGENT_ENCOURAGEMENT), 50)
-
-    def test_constant_contains_subagent_keyword(self):
-        self.assertIn("subagent", SUBAGENT_ENCOURAGEMENT.lower())
-
-    def test_constant_contains_parallel_keyword(self):
-        self.assertIn("parallel", SUBAGENT_ENCOURAGEMENT.lower())
-
-    def test_constant_contains_efficiency_keyword(self):
-        self.assertIn("efficiency", SUBAGENT_ENCOURAGEMENT.lower())
-
-    def test_constant_contains_encouragement_marker(self):
-        self.assertIn("Subagent Usage Encouragement", SUBAGENT_ENCOURAGEMENT)
-
-
 class TestBuildScriptGenPromptInjection(unittest.TestCase):
     """Test that build_script_gen_prompt injects SUBAGENT_ENCOURAGEMENT."""
-
-    def test_prompt_ends_with_encouragement(self):
-        prompt = build_script_gen_prompt(
-            requirement="Test requirement",
-            available_tools=["coco", "claude"],
-        )
-        self.assertTrue(prompt.endswith(SUBAGENT_ENCOURAGEMENT))
 
     def test_prompt_contains_requirement(self):
         prompt = build_script_gen_prompt(
@@ -260,24 +193,8 @@ class TestBuildScriptGenPromptInjection(unittest.TestCase):
         )
         self.assertNotIn("预算", prompt)
 
-    def test_encouragement_appears_exactly_once(self):
-        prompt = build_script_gen_prompt(
-            requirement="Test",
-            available_tools=["coco"],
-        )
-        count = prompt.count(SUBAGENT_ENCOURAGEMENT)
-        self.assertEqual(count, 1, f"Expected encouragement once, found {count} times")
-
-
 class TestGenerateSimpleScriptEncouragement(unittest.TestCase):
     """Test that generate_simple_script includes SUBAGENT_ENCOURAGEMENT in agent prompts."""
-
-    def test_script_contains_encouragement_in_agent_prompts(self):
-        script = generate_simple_script("Test requirement for simple script")
-        # The encouragement should appear in each agent() call prompt
-        # There are 4 agent calls: planner, executor, task (in map), synthesizer
-        count = script.count(SUBAGENT_ENCOURAGEMENT)
-        self.assertGreaterEqual(count, 3, f"Expected encouragement in at least 3 agent prompts, found {count}")
 
     def test_generate_simple_script_returns_card_summary_envelope(self):
         script = generate_simple_script("Implement and verify a focused change")

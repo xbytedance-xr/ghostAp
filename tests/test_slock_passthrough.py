@@ -26,6 +26,7 @@ def _sync_submit(fn, *args, **kwargs):
     return future
 
 
+@pytest.mark.slow
 class TestSlockPassthrough:
     """Verify SlockHandler passes through messages in non-slock chats."""
 
@@ -106,6 +107,7 @@ class TestSlockPassthrough:
         handler.handle_slock_command.assert_called_once()
 
 
+@pytest.mark.slow
 class TestSlockPassthroughNoSideEffects:
     """Extended passthrough tests: verify zero side effects when chat is not slock-activated."""
 

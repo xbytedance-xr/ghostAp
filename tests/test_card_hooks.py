@@ -768,6 +768,7 @@ class TestEmojiHookEmptyMessageId:
 class TestFireFirstDeliveredTimeout:
     """AC14: fire_first_delivered with slow hook does not block beyond timeout."""
 
+    @pytest.mark.slow
     def test_slow_hook_does_not_block(self):
         """A hook sleeping 5s should be cancelled within DISPATCHED_HOOK_TIMEOUT (3s)."""
         import time
