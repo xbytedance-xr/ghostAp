@@ -1322,7 +1322,6 @@ class FeishuWSClient:
         大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
         """
         from ..thread import (
-            get_current_thread_id,
             set_current_is_p2p,
             set_current_mentioned_names,
             set_current_sender_id,
@@ -1456,11 +1455,7 @@ class FeishuWSClient:
                     record_group_event(
                         tenant_key=_tenant_key,
                         chat_id=chat_id,
-                        thread_id=(
-                            get_current_thread_id()
-                            or getattr(message, "root_id", None)
-                            or ""
-                        ),
+                        thread_id=getattr(message, "thread_id", None) or "",
                         message_id=message_id,
                         sender_id=_sender_id,
                         text=text,

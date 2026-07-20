@@ -2452,6 +2452,35 @@ def test_transient_context_failure_retries_durably_then_terminalizes(
     harness.close()
 
 
+def test_invalid_canonical_partial_enters_bounded_context_retry(
+    tmp_path,
+) -> None:
+    from src.autonomous.context import (
+        ContextUnavailableError,
+        ContextUnavailableReason,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+
+    class _InvalidLedgerContext:
+        def assemble(self, _request):
+            raise ContextUnavailableError(ContextUnavailableReason.SOURCE)
+
+        def assemble_canonical_partial(self, *_args, **_kwargs):
+            raise ContextUnavailableError(
+                ContextUnavailableReason.ROOT_THREAD_BINDING
+            )
+
+    harness.coordinator._context = _InvalidLedgerContext()  # noqa: SLF001
+
+    assert harness.coordinator.prepare_next() is None
+    record = next(iter(harness.router.state.by_acceptance_id.values()))
+    assert record.state == "queued"
+    assert record.context_failures == 1
+    assert record.reason_code == ""
+    harness.close()
+
+
 def test_transient_context_retry_waits_until_durable_eligibility_after_restart(
     tmp_path,
 ) -> None:

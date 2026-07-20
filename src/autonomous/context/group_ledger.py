@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,6 +30,9 @@ from .models import (
 
 class GroupLedgerError(RuntimeError):
     pass
+
+
+_FEISHU_THREAD_ID_PATTERN = re.compile(r"omt_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +300,21 @@ class GroupContextLedger:
             payload = GroupEventPayload.from_bytes(self._blobs.read(record.payload_ref))
             if payload.sender_tenant_key != request.tenant_key:
                 raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
+            thread_id = record.thread_id
+            if thread_id == request.thread_root_message_id:
+                # Older main-Bot observations stored the topic root message
+                # (``om_``) in the Feishu thread field.  Recover only the
+                # authority-bound current topic root with a real ``omt_``;
+                # all other malformed ledger coordinates fail as Context.
+                if not request.feishu_thread_id:
+                    raise ContextUnavailableError(
+                        ContextUnavailableReason.ROOT_THREAD_BINDING
+                    )
+                thread_id = request.feishu_thread_id
+            elif thread_id and _FEISHU_THREAD_ID_PATTERN.fullmatch(thread_id) is None:
+                raise ContextUnavailableError(
+                    ContextUnavailableReason.ROOT_THREAD_BINDING
+                )
             messages.append(
                 ContextMessage(
                     message_id=record.message_id,
@@ -305,7 +324,7 @@ class GroupContextLedger:
                     timestamp=payload.timestamp,
                     is_current=record is canonical.records[-1],
                     chat_id=record.chat_id,
-                    thread_id=record.thread_id,
+                    thread_id=thread_id,
                     root_id=(
                         ""
                         if record.message_id == request.thread_root_message_id

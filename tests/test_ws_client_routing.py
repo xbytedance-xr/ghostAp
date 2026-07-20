@@ -84,6 +84,7 @@ def create_mock_message(text: str, message_id="msg_123", chat_id="chat_456", mes
     # Reset parent/root
     data.event.message.parent_id = None
     data.event.message.root_id = None
+    data.event.message.thread_id = None
     return data
 
 
@@ -576,6 +577,8 @@ def test_group_ledger_publication_precedes_programming_mode_dispatch(
 ) -> None:
     msg = create_mock_message("implement this")
     msg.event.message.chat_type = "group"
+    msg.event.message.root_id = "om_topic_root"
+    msg.event.message.thread_id = "omt_topic"
     mock_ws_client._validate_message = MagicMock(return_value=True)
     project = ProjectContext("proj_1", "Test", "/tmp")
     mock_ws_client._resolve_message_context = MagicMock(
@@ -583,8 +586,8 @@ def test_group_ledger_publication_precedes_programming_mode_dispatch(
     )
     mock_coco_handler = MagicMock()
     mock_ws_client._get_mode_handler = MagicMock(return_value=mock_coco_handler)
-    runtime = MagicMock()
-    mock_ws_client._employee_department_runtime = runtime
+    runtime = mock_ws_client._employee_department_runtime
+    runtime.record_group_event = MagicMock(return_value=True)
     task_ctx = SimpleNamespace(
         run_id="run_group_ledger",
         spec=SimpleNamespace(
@@ -600,7 +603,7 @@ def test_group_ledger_publication_precedes_programming_mode_dispatch(
     runtime.record_group_event.assert_called_once_with(
         tenant_key="tenant_1",
         chat_id="chat_456",
-        thread_id="",
+        thread_id="omt_topic",
         message_id="msg_123",
         sender_id="ou_user",
         text="implement this",

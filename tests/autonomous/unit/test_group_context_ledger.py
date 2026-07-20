@@ -13,6 +13,7 @@ from src.autonomous.context.group_ledger import (
 from src.autonomous.context.models import (
     AuthorizedContextRequest,
     ContextQuality,
+    ContextUnavailableError,
     ContextUnavailableReason,
 )
 from src.autonomous.journal.anchor import FileAnchor
@@ -228,5 +229,121 @@ def test_canonical_partial_uses_journal_order_and_reports_warning(tmp_path: Path
     assert [item.text for item in snapshot.group_messages] == ["prior"]
     assert snapshot.thread_messages[0].text == "current"
     assert [item.code for item in snapshot.warnings] == ["order_unavailable"]
+    store.close()
+    writer.close()
+
+
+def test_canonical_partial_recovers_legacy_root_id_in_thread_field(
+    tmp_path: Path,
+) -> None:
+    writer, store, ledger = _ledger(tmp_path)
+    ledger.publish(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        thread_id="om_topic_root",
+        message_id="om_current",
+        transport_principal_id="main_bot",
+        transport_event_id="evt_current",
+        payload=_payload(timestamp=2.0),
+    )
+    request = AuthorizedContextRequest(
+        tenant_key="tenant_1",
+        agent_id="agt_worker",
+        bot_principal_id="bot_worker",
+        app_id="cli_worker",
+        channel_generation=1,
+        chat_id="oc_team",
+        thread_root_message_id="om_topic_root",
+        feishu_thread_id="omt_topic",
+        current_message_id="om_current",
+        requester_principal_id="ou_user",
+    )
+
+    snapshot = ledger.assemble_partial(
+        request,
+        warning_reason=ContextUnavailableReason.SOURCE,
+    )
+
+    assert snapshot.thread_messages[0].thread_id == "omt_topic"
+    assert snapshot.watermark is not None
+    assert snapshot.watermark.feishu_thread_id == "omt_topic"
+    store.close()
+    writer.close()
+
+
+def test_canonical_partial_rejects_legacy_root_without_feishu_thread_id(
+    tmp_path: Path,
+) -> None:
+    writer, store, ledger = _ledger(tmp_path)
+    ledger.publish(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        thread_id="om_topic_root",
+        message_id="om_current",
+        transport_principal_id="main_bot",
+        transport_event_id="evt_current",
+        payload=_payload(timestamp=2.0),
+    )
+    request = AuthorizedContextRequest(
+        tenant_key="tenant_1",
+        agent_id="agt_worker",
+        bot_principal_id="bot_worker",
+        app_id="cli_worker",
+        channel_generation=1,
+        chat_id="oc_team",
+        thread_root_message_id="om_topic_root",
+        feishu_thread_id="",
+        current_message_id="om_current",
+        requester_principal_id="ou_user",
+    )
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        ledger.assemble_partial(
+            request,
+            warning_reason=ContextUnavailableReason.SOURCE,
+        )
+
+    assert raised.value.reason is ContextUnavailableReason.ROOT_THREAD_BINDING
+    store.close()
+    writer.close()
+
+
+def test_canonical_partial_rejects_nonmatching_legacy_topic_as_context_error(
+    tmp_path: Path,
+) -> None:
+    writer, store, ledger = _ledger(tmp_path)
+    for thread_id, message_id, timestamp in (
+        ("om_other_topic_root", "om_other", 1.0),
+        ("om_current_topic_root", "om_current", 2.0),
+    ):
+        ledger.publish(
+            tenant_key="tenant_1",
+            chat_id="oc_team",
+            thread_id=thread_id,
+            message_id=message_id,
+            transport_principal_id="main_bot",
+            transport_event_id=f"evt_{message_id}",
+            payload=_payload(timestamp=timestamp),
+        )
+    request = AuthorizedContextRequest(
+        tenant_key="tenant_1",
+        agent_id="agt_worker",
+        bot_principal_id="bot_worker",
+        app_id="cli_worker",
+        channel_generation=1,
+        chat_id="oc_team",
+        thread_root_message_id="om_current_topic_root",
+        feishu_thread_id="omt_current_topic",
+        current_message_id="om_current",
+        requester_principal_id="ou_user",
+    )
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        ledger.assemble_partial(
+            request,
+            warning_reason=ContextUnavailableReason.SOURCE,
+        )
+
+    assert raised.value.reason is ContextUnavailableReason.ROOT_THREAD_BINDING
     store.close()
     writer.close()
