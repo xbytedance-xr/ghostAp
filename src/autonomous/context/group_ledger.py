@@ -33,6 +33,7 @@ class GroupLedgerError(RuntimeError):
 
 
 _FEISHU_THREAD_ID_PATTERN = re.compile(r"omt_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+_FEISHU_MESSAGE_ID_PATTERN = re.compile(r"om_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,7 +297,9 @@ class GroupContextLedger:
             causal_event_id=causal_event_id,
         )
         messages: list[ContextMessage] = []
+        legacy_thread_record_omitted = False
         for record in canonical.records:
+            is_current = record is canonical.records[-1]
             payload = GroupEventPayload.from_bytes(self._blobs.read(record.payload_ref))
             if payload.sender_tenant_key != request.tenant_key:
                 raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
@@ -312,6 +315,16 @@ class GroupContextLedger:
                     )
                 thread_id = request.feishu_thread_id
             elif thread_id and _FEISHU_THREAD_ID_PATTERN.fullmatch(thread_id) is None:
+                # An older producer stored ``om_`` topic roots in this field.
+                # A non-current record is only group history, so omit it when
+                # its real ``omt_`` coordinate cannot be authority-bound.  The
+                # current record and arbitrary malformed values still fail.
+                if (
+                    not is_current
+                    and _FEISHU_MESSAGE_ID_PATTERN.fullmatch(thread_id) is not None
+                ):
+                    legacy_thread_record_omitted = True
+                    continue
                 raise ContextUnavailableError(
                     ContextUnavailableReason.ROOT_THREAD_BINDING
                 )
@@ -322,7 +335,7 @@ class GroupContextLedger:
                     sender_type=payload.sender_type,
                     text=payload.text,
                     timestamp=payload.timestamp,
-                    is_current=record is canonical.records[-1],
+                    is_current=is_current,
                     chat_id=record.chat_id,
                     thread_id=thread_id,
                     root_id=(
@@ -366,9 +379,17 @@ class GroupContextLedger:
             if warning_reason is ContextUnavailableReason.ORDERING
             else f"{warning_reason.value}_unavailable"
         )
-        warning = ContextWarning(warning_code, "lark")
+        warnings = [ContextWarning(warning_code, "lark")]
+        if legacy_thread_record_omitted:
+            warnings.append(
+                ContextWarning("legacy_thread_record_omitted", "ledger")
+            )
         snapshot_hash = hashlib.sha256(
-            (revision_digest + warning.code + request.constraints_digest).encode()
+            (
+                revision_digest
+                + "".join(item.code for item in warnings)
+                + request.constraints_digest
+            ).encode()
         ).hexdigest()
         return AssembledContext(
             thread_messages=(current,),
@@ -384,7 +405,7 @@ class GroupContextLedger:
             constraints_digest=request.constraints_digest,
             tokens_per_char=self._config.tokens_per_char,
             quality=ContextQuality.CANONICAL_PARTIAL,
-            warnings=(warning,),
+            warnings=tuple(warnings),
         )
 
     @staticmethod

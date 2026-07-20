@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -229,6 +230,14 @@ def test_canonical_partial_uses_journal_order_and_reports_warning(tmp_path: Path
     assert [item.text for item in snapshot.group_messages] == ["prior"]
     assert snapshot.thread_messages[0].text == "current"
     assert [item.code for item in snapshot.warnings] == ["order_unavailable"]
+    assert snapshot.watermark is not None
+    assert snapshot.snapshot_hash == hashlib.sha256(
+        (
+            snapshot.watermark.revision_digest
+            + "order_unavailable"
+            + request.constraints_digest
+        ).encode()
+    ).hexdigest()
     store.close()
     writer.close()
 
@@ -308,13 +317,14 @@ def test_canonical_partial_rejects_legacy_root_without_feishu_thread_id(
     writer.close()
 
 
-def test_canonical_partial_rejects_nonmatching_legacy_topic_as_context_error(
+def test_canonical_partial_skips_unmappable_legacy_topic_before_current_message(
     tmp_path: Path,
 ) -> None:
     writer, store, ledger = _ledger(tmp_path)
     for thread_id, message_id, timestamp in (
+        ("om_first_topic_root", "om_first", 0.5),
         ("om_other_topic_root", "om_other", 1.0),
-        ("om_current_topic_root", "om_current", 2.0),
+        ("", "om_current", 2.0),
     ):
         ledger.publish(
             tenant_key="tenant_1",
@@ -332,8 +342,107 @@ def test_canonical_partial_rejects_nonmatching_legacy_topic_as_context_error(
         app_id="cli_worker",
         channel_generation=1,
         chat_id="oc_team",
-        thread_root_message_id="om_current_topic_root",
-        feishu_thread_id="omt_current_topic",
+        thread_root_message_id="om_current",
+        feishu_thread_id="",
+        current_message_id="om_current",
+        requester_principal_id="ou_user",
+    )
+
+    snapshot = ledger.assemble_partial(
+        request,
+        warning_reason=ContextUnavailableReason.SOURCE,
+    )
+
+    assert snapshot.group_messages == ()
+    assert snapshot.thread_messages[0].message_id == "om_current"
+    assert [item.code for item in snapshot.warnings] == [
+        "source_unavailable",
+        "legacy_thread_record_omitted",
+    ]
+    assert snapshot.watermark is not None
+    snapshot_hash_without_omission_warning = hashlib.sha256(
+        (
+            snapshot.watermark.revision_digest
+            + "source_unavailable"
+            + request.constraints_digest
+        ).encode()
+    ).hexdigest()
+    assert snapshot.snapshot_hash == hashlib.sha256(
+        (
+            snapshot.watermark.revision_digest
+            + "source_unavailable"
+            + "legacy_thread_record_omitted"
+            + request.constraints_digest
+        ).encode()
+    ).hexdigest()
+    assert snapshot.snapshot_hash != snapshot_hash_without_omission_warning
+    store.close()
+    writer.close()
+
+
+def test_canonical_partial_rejects_nonmatching_legacy_current_topic(
+    tmp_path: Path,
+) -> None:
+    writer, store, ledger = _ledger(tmp_path)
+    ledger.publish(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        thread_id="om_other_topic_root",
+        message_id="om_current",
+        transport_principal_id="main_bot",
+        transport_event_id="evt_current",
+        payload=_payload(timestamp=2.0),
+    )
+    request = AuthorizedContextRequest(
+        tenant_key="tenant_1",
+        agent_id="agt_worker",
+        bot_principal_id="bot_worker",
+        app_id="cli_worker",
+        channel_generation=1,
+        chat_id="oc_team",
+        thread_root_message_id="om_current",
+        feishu_thread_id="",
+        current_message_id="om_current",
+        requester_principal_id="ou_user",
+    )
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        ledger.assemble_partial(
+            request,
+            warning_reason=ContextUnavailableReason.SOURCE,
+        )
+
+    assert raised.value.reason is ContextUnavailableReason.ROOT_THREAD_BINDING
+    store.close()
+    writer.close()
+
+
+def test_canonical_partial_rejects_unknown_historical_thread_coordinate(
+    tmp_path: Path,
+) -> None:
+    writer, store, ledger = _ledger(tmp_path)
+    for thread_id, message_id, timestamp in (
+        ("corrupt_thread", "om_prior", 1.0),
+        ("", "om_current", 2.0),
+    ):
+        ledger.publish(
+            tenant_key="tenant_1",
+            chat_id="oc_team",
+            thread_id=thread_id,
+            message_id=message_id,
+            transport_principal_id="main_bot",
+            transport_event_id=f"evt_{message_id}",
+            payload=_payload(timestamp=timestamp),
+        )
+    request = AuthorizedContextRequest(
+        tenant_key="tenant_1",
+        agent_id="agt_worker",
+        bot_principal_id="bot_worker",
+        app_id="cli_worker",
+        channel_generation=1,
+        chat_id="oc_team",
+        thread_root_message_id="om_current",
+        feishu_thread_id="",
         current_message_id="om_current",
         requester_principal_id="ou_user",
     )
