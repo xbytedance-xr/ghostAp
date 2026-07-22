@@ -184,8 +184,8 @@ class TestACPStreamBridgeBehavior:
         assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 1
         assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
 
-    def test_tool_call_start_is_hard_boundary_for_open_blocks(self):
-        """Tool starts close active text/reasoning so later output gets new block IDs."""
+    def test_tool_call_keeps_reasoning_summary_but_splits_streamed_text(self):
+        """Tools split answer text without fragmenting one source's process summary."""
         from unittest.mock import MagicMock
 
         from src.acp import ACPEventType
@@ -207,11 +207,16 @@ class TestACPStreamBridgeBehavior:
         bridge.on_event(_event(ACPEventType.THOUGHT_CHUNK, "引用"))
         bridge.on_event(_event(ACPEventType.TOOL_CALL_START))
         bridge.on_event(_event(ACPEventType.TEXT_CHUNK, "工具后的正文"))
+        bridge.on_event(_event(ACPEventType.THOUGHT_CHUNK, "继续分析"))
 
         assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 1
-        assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
+        assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 0
         text_started = [e for e in disp.events if e.type == CardEventType.TEXT_STARTED]
         assert [e.payload["block_id"] for e in text_started] == ["_active_text", "_turn_2_text"]
+        reasoning_started = [e for e in disp.events if e.type == CardEventType.REASONING_STARTED]
+        reasoning_deltas = [e for e in disp.events if e.type == CardEventType.REASONING_DELTA]
+        assert [e.payload["block_id"] for e in reasoning_started] == ["_active_reasoning"]
+        assert {e.payload["block_id"] for e in reasoning_deltas} == {"_active_reasoning"}
 
     def test_interleaved_text_chunks_from_different_sources_use_separate_blocks(self):
         """Concurrent agent text streams must not append into the same text block."""

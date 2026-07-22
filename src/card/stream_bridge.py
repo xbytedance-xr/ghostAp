@@ -70,7 +70,7 @@ class ACPStreamBridge:
             elif acp_event.event_type == ACPEventType.TEXT_CHUNK:
                 text_block_id = self._ensure_text_block_locked(source_key)
             elif acp_event.event_type == ACPEventType.TOOL_CALL_START:
-                self._close_open_blocks_locked()
+                self._close_text_blocks_locked()
 
             # Override block_id in the converted CardEvent to match our per-turn ID
             ce = card_event_from_acp(acp_event)
@@ -94,6 +94,12 @@ class ACPStreamBridge:
             self._dispatchable.dispatch(CardEvent.reasoning_done(block_id))
         self._active_reasoning_sources.clear()
         self._reasoning_active = False
+        self._close_text_blocks_locked()
+
+    def _close_text_blocks_locked(self) -> None:
+        """Close answer text at a tool boundary without fragmenting reasoning."""
+        from src.card.events import CardEvent
+
         for source_key in list(self._active_text_sources):
             block_id = self._text_blocks_by_source.get(source_key, self._active_text_block_id)
             self._dispatchable.dispatch(CardEvent.text_done(block_id))
@@ -121,8 +127,10 @@ class ACPStreamBridge:
 
         if source_key in self._active_reasoning_sources:
             return self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
-        self._reasoning_turn_seq += 1
-        bid = self._block_id("reasoning", self._reasoning_turn_seq, source_key)
+        bid = self._reasoning_blocks_by_source.get(source_key)
+        if bid is None:
+            self._reasoning_turn_seq += 1
+            bid = self._block_id("reasoning", self._reasoning_turn_seq, source_key)
         self._active_reasoning_block_id = bid
         self._reasoning_blocks_by_source[source_key] = bid
         self._dispatchable.dispatch(CardEvent.reasoning_started(bid))

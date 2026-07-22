@@ -287,7 +287,7 @@ class TestUnifiedCardSections:
 
         panels = [
             el for el in body
-            if el.get("tag") == "collapsible_panel" and "深度思考中" in str(el.get("header", {}))
+            if el.get("tag") == "collapsible_panel" and "正在分析" in str(el.get("header", {}))
         ]
         assert len(panels) == 1
         markdown = panels[0]["elements"][0]
@@ -818,7 +818,7 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        assert any(el.get("tag") == "collapsible_panel" and "深度思考中" in str(el) for el in body)
+        assert any(el.get("tag") == "collapsible_panel" and "正在分析" in str(el) for el in body)
 
     def test_spec_reasoning_full_mode_keeps_complete_text(self):
         long_content = "完整思考内容" * 120
@@ -859,7 +859,7 @@ class TestMultipleBlockTypes:
         cards = render_card(state, RenderBudget())
         panels = [
             el for el in cards[0]._card_json["body"]["elements"]
-            if el.get("tag") == "collapsible_panel" and "思考完成" in str(el.get("header", {}))
+            if el.get("tag") == "collapsible_panel" and "过程摘要" in str(el.get("header", {}))
         ]
 
         assert len(panels) == 1

@@ -167,9 +167,9 @@ class RenderedContent:
             header_text = f"{icon} {sec.tool_count} 次工具调用" if sec.tool_count > 1 else f"{icon} 工具调用"
         elif sec.section_type == "thought":
             if not sec.is_complete:
-                header_text = "🧠 思考中"
+                header_text = "🧠 正在分析"
             else:
-                header_text = "🧠 思考完成，点击查看"
+                header_text = "🧠 过程摘要，点击查看"
         else:
             header_text = "详情"
 

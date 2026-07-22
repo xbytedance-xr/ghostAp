@@ -109,8 +109,6 @@ class ProgrammingCardSession:
         self._reasoning_blocks_by_source: dict[str, str] = {}
         self._active_text_sources: set[str] = set()
         self._active_reasoning_sources: set[str] = set()
-        self._reasoning_turn_seq = 0
-        self._last_reasoning_boundary_seq = 0
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
         # Text batching state
         self._pending_text = ""
@@ -207,13 +205,11 @@ class ProgrammingCardSession:
         # Structural event: flush pending text first
         self._flush_now()
 
-        if card_event.type == CardEventType.TOOL_STARTED and self._reasoning_active:
-            self._close_reasoning_blocks()
-
-        # Tool events mark text as inactive and bump reasoning boundary
+        # Tool events split streamed answer text, but reasoning remains one
+        # secondary process summary for the whole source/task. Closing it for
+        # every tool produces alternating one-tool/one-thought panels.
         if card_event.type == CardEventType.TOOL_STARTED:
             self._last_tool_boundary_seq += 1
-            self._last_reasoning_boundary_seq += 1
             if self._text_active:
                 self._close_text_blocks()
 
@@ -395,7 +391,7 @@ class ProgrammingCardSession:
         """Open or reuse the current logical reasoning block for one source."""
         if source_key in self._active_reasoning_sources:
             return self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
-        block_id = self._current_reasoning_block_id(source_key)
+        block_id = self._reasoning_blocks_by_source.get(source_key) or self._current_reasoning_block_id(source_key)
         self._active_reasoning_block_id = block_id
         self._reasoning_blocks_by_source[source_key] = block_id
         self._rotator.dispatch(CardEvent.reasoning_started(block_id))
@@ -426,18 +422,8 @@ class ProgrammingCardSession:
         return self._block_id("text", self._text_turn_seq, source_key)
 
     def _current_reasoning_block_id(self, source_key: str = "main") -> str:
-        """Return a unique reasoning block ID for the current ACP turn.
-
-        Mirrors ``_current_text_block_id`` to ensure each reasoning segment
-        (between tool boundaries) gets its own block, preventing the
-        block_index last-wins lookup from collapsing all reasoning panels
-        into the same content.
-        """
-        if self._reasoning_turn_seq == 0:
-            self._reasoning_turn_seq = 1
-        if self._last_reasoning_boundary_seq >= self._reasoning_turn_seq:
-            self._reasoning_turn_seq = self._last_reasoning_boundary_seq + 1
-        return self._block_id("reasoning", self._reasoning_turn_seq, source_key)
+        """Return the stable process-summary block ID for one ACP source."""
+        return self._block_id("reasoning", 1, source_key)
 
     @staticmethod
     def _source_key(acp_event: "ACPEvent") -> str:

@@ -148,7 +148,7 @@ class TestReasoningPanel:
         assert result["tag"] == "collapsible_panel"
         assert result["expanded"] is True
         assert result["border"]["color"] == "grey"
-        assert "深度思考中" in result["header"]["title"]["content"]
+        assert "正在分析" in result["header"]["title"]["content"]
         markdown = result["elements"][0]
         assert markdown["text_align"] == "left"
         md_content = markdown["content"]
@@ -163,7 +163,7 @@ class TestReasoningPanel:
         assert result["expanded"] is False
         title = result["header"]["title"]["content"]
         assert "1500" in title
-        assert "思考完成" in title
+        assert "过程摘要" in title
         assert result["elements"][0]["content"] == "full thought"
 
     def test_reasoning_done_full_mode_does_not_truncate(self):
@@ -203,7 +203,7 @@ class TestReasoningPanel:
         """content='' should render header only, no empty markdown body (AC-22)."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="")
         result = render_reasoning_panel(block)
-        assert "深度思考中" in result["header"]["title"]["content"]
+        assert "正在分析" in result["header"]["title"]["content"]
         assert result["elements"] == []
 
     def test_reasoning_panel_has_grey_border(self):

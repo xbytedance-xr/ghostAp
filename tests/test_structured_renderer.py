@@ -414,7 +414,7 @@ class TestReasoningBlock:
             ContentSection(section_type="thought", markdown="done", collapsed_by_default=True, is_complete=True),
         ])
         elems = rc.to_elements(collapsible=True)
-        assert "思考完成" in elems[0]["header"]["content"]
+        assert "过程摘要" in elems[0]["header"]["content"]
 
     def test_long_reasoning_truncated(self):
         """process_event_structured should truncate thought content via cap_reasoning_tail."""

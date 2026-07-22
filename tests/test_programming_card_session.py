@@ -347,21 +347,57 @@ class TestProgrammingCardSession:
         assert [b.content for b in text_blocks] == ["第一轮。", "第二轮。", "第三轮。"]
         assert len({b.block_id for b in text_blocks}) == 3
 
-    def test_acp_reasoning_is_closed_at_turn_boundary(self):
+    def test_tool_calls_do_not_fragment_one_reasoning_summary(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 
         pcs, _ = _make_programming_session()
         pcs.start()
-        pcs.on_event(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="需要先读文件"))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="需要先读文件。"))
         pcs.on_event(ACPEvent(
             event_type=ACPEventType.TOOL_CALL_START,
             tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="in_progress", content="src/a.py"),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="completed", content="done"),
+        ))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="再检查测试。"))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(id="read-2", title="Read", kind="read", status="in_progress", content="tests/test_a.py"),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(id="read-2", title="Read", kind="read", status="completed", content="done"),
         ))
 
         reasoning_blocks = [b for b in pcs.session.state.blocks if b.kind == "reasoning"]
         assert len(reasoning_blocks) == 1
         assert reasoning_blocks[0].block_id == "_active_reasoning"
+        assert reasoning_blocks[0].content == "需要先读文件。再检查测试。"
+        assert reasoning_blocks[0].status == "active"
+
+        pcs.finish()
+
+        reasoning_blocks = [b for b in pcs.session.state.blocks if b.kind == "reasoning"]
+        assert len(reasoning_blocks) == 1
         assert reasoning_blocks[0].status == "completed"
+
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+
+        pages = render_card(pcs.session.state, RenderBudget())
+        panels = [
+            element
+            for page in pages
+            for element in page._card_json["body"]["elements"]
+            if element.get("tag") == "collapsible_panel"
+        ]
+        titles = [panel["header"]["title"]["content"] for panel in panels]
+        assert sum("过程摘要" in title for title in titles) == 1
+        activity_titles = [title for title in titles if "过程摘要" not in title]
+        assert len(activity_titles) == 1
+        assert "2" in activity_titles[0]
 
     def test_plan_update_moves_to_task_list_at_card_start(self):
         from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo

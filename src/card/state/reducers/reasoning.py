@@ -13,8 +13,13 @@ def reduce_reasoning(state: CardState, event: CardEvent) -> CardState:
     match event.type:
         case CardEventType.REASONING_STARTED:
             block_id = event.payload.get("block_id", "")
-            new_block = ReasoningBlock(block_id=block_id, status="active", content="")
             footer = replace(state.footer, status="thinking", status_text=UI_TEXT["card_lifecycle_reasoning"])
+            idx = state.block_index.get(block_id)
+            if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "reasoning":
+                block = replace(state.blocks[idx], status="active")
+                blocks = state.blocks[:idx] + (block,) + state.blocks[idx + 1:]
+                return replace(state, blocks=blocks, footer=footer)
+            new_block = ReasoningBlock(block_id=block_id, status="active", content="")
             return replace(state, blocks=state.blocks + (new_block,), footer=footer)
 
         case CardEventType.REASONING_DELTA:

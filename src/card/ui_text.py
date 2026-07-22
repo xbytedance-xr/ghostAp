@@ -726,7 +726,7 @@ UI_TEXT = {
     "wt_btn_stop": "⏹️ 停止（保留结果）",
     # --- Card lifecycle strings ---
     "card_lifecycle_thinking": "💭 正在思考…",
-    "card_lifecycle_reasoning": "💭 深度思考中…",
+    "card_lifecycle_reasoning": "💭 正在分析…",
     "card_lifecycle_error_fallback": "❌ 执行异常，请重新发送 {engine_cmd} 启动新任务",
     "card_lifecycle_error_fallback_spec": "❌ 执行异常，发送 /spec_recover 可恢复进度，或重新发送 {engine_cmd} 启动新任务",
     "card_lifecycle_retry_failed": "🔄 重新执行失败工具",
@@ -911,8 +911,8 @@ UI_TEXT = {
     "phase_debugging": "调试中",
     "phase_default": "进行中",
     # --- Reasoning panel ---
-    "reasoning_panel_thinking": "💭 **深度思考中…**",
-    "reasoning_panel_done": "💭 **思考完成** · {char_count}字",
+    "reasoning_panel_thinking": "💭 **正在分析…**",
+    "reasoning_panel_done": "💭 **过程摘要** · {char_count}字",
     # --- Truncation (extracted from payload_truncator.py) ---
     "truncation_suffix": "…(已截断)",
     "truncation_warning_with_cmd": "⚠️ 内容过长已自动截断。请发送 {cmd_hint} 查看完整内容",
