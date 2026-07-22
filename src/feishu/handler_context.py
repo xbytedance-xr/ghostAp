@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     import lark_oapi as lark
+    from lark_channel import FeishuChannel
 
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
@@ -108,6 +109,7 @@ class HandlerContext:
     main_bot_outbound_audit: Optional[Callable[[str, str, str], None]] = None
     main_bot_outbound_audit_failure: Optional[Callable[[Exception], None]] = None
     tenant_key_resolver: Optional[Callable[[], str]] = None
+    channel_client_factory: Optional[Callable[[], "FeishuChannel"]] = None
 
     def dependency_view(self) -> HandlerDependencyView:
         """Return a minimal service view while keeping existing fields compatible."""

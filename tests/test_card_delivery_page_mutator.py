@@ -17,6 +17,7 @@ class MockClient:
         self.creates = []
         self.updates = []
         self.elements = []
+        self.finishes = []
         self.streaming_creates = []
         self.card_references = []
         self._counter = 0
@@ -24,6 +25,7 @@ class MockClient:
         self._raise_on_update: Exception | None = None
         self._raise_on_element: Exception | None = None
         self._raise_on_streaming: Exception | None = None
+        self._raise_on_finish: Exception | None = None
 
     def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         if self._raise_on_create:
@@ -34,7 +36,9 @@ class MockClient:
     def update_card(self, card_id, card_json, *, sequence=0):
         if self._raise_on_update:
             raise self._raise_on_update
-        self.updates.append({"card_id": card_id, "sequence": sequence})
+        self.updates.append(
+            {"card_id": card_id, "card_json": card_json, "sequence": sequence}
+        )
 
     def update_element(self, card_id, element_id, content, *, sequence=0):
         if self._raise_on_element:
@@ -50,6 +54,11 @@ class MockClient:
     def send_card_reference(self, chat_id, card_id, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         self._counter += 1
         return f"ref_msg_{self._counter}"
+
+    def finish_streaming_card(self, card_id, *, sequence):
+        if self._raise_on_finish:
+            raise self._raise_on_finish
+        self.finishes.append({"card_id": card_id, "sequence": sequence})
 
 
 def _make_card(*, page_index=0, signature="sig_1", text="hello", streaming=False):
@@ -127,6 +136,7 @@ class TestCreatePage:
         binding = bindings.get("sess_1")
         assert binding is not None
         assert 0 in binding.pages
+        assert binding.pages[0].is_streaming is False
 
     def test_create_page_streaming_success(self):
         client = MockClient()
@@ -139,6 +149,59 @@ class TestCreatePage:
         outcome = mutator.create_page("sess_1", "chat_1", card)
 
         assert outcome.kind == "applied"
+        assert bindings.get("sess_1").pages[0].is_streaming is True
+
+    def test_terminal_streaming_page_updates_snapshot_then_finishes(self):
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old", "partial")
+        page = bindings.get("sess_1").pages[0]
+        page.is_streaming = True
+        terminal = _make_card(signature="terminal", text="done", streaming=False)
+
+        outcome = mutator.update_page(
+            "sess_1",
+            page,
+            terminal,
+            force_finish_streaming=True,
+        )
+
+        assert outcome.kind == "applied"
+        assert client.updates[0]["card_json"]["config"]["streaming_mode"] is True
+        assert client.updates[0]["sequence"] == 1
+        assert client.finishes == [{"card_id": "card_1", "sequence": 2}]
+
+    def test_finish_failure_keeps_stream_open_for_terminal_retry(self):
+        client = MockClient()
+        client._raise_on_finish = TransportError("finish unavailable")
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page(
+            "sess_1",
+            0,
+            "msg_1",
+            "card_1",
+            "old",
+            "partial",
+            is_streaming=True,
+        )
+        page = bindings.get("sess_1").pages[0]
+
+        outcome = mutator.update_page(
+            "sess_1",
+            page,
+            _make_card(signature="terminal", text="done", streaming=True),
+            force_finish_streaming=True,
+        )
+
+        assert outcome.kind == "reconcile"
+        assert page.is_streaming is True
+        assert page.signature == "old"
 
     def test_create_page_records_guarded_active_text(self):
         """Binding cache must match the text actually present in the sent card."""
@@ -227,6 +290,27 @@ class TestCreatePage:
         binding = bindings.get("sess_1")
         assert binding is not None
         assert 0 in binding.pages
+        assert binding.pages[0].is_streaming is False
+
+    def test_channel_streaming_failure_does_not_fallback_to_inline_card(self):
+        client = MockClient()
+        client._raise_on_streaming = RuntimeError("streaming failed")
+        client.allow_streaming_fallback = False
+        client.create_card = MagicMock(return_value=("msg_inline", "msg_inline"))
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+        bindings.create("sess_1", "chat_1")
+
+        outcome = mutator.create_page(
+            "sess_1",
+            "chat_1",
+            _make_card(streaming=True),
+        )
+
+        assert outcome.kind == "reconcile"
+        client.create_card.assert_not_called()
+        assert bindings.get("sess_1").pages == {}
 
     def test_create_page_total_failure(self):
         """When all creation attempts fail, returns reconcile."""

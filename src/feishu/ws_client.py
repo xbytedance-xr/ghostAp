@@ -19,16 +19,20 @@ from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import GetChatRequest
-from lark_oapi.event.callback.model.p2_card_action_trigger import (
+from lark_channel import EventDispatcherHandler as ChannelEventDispatcherHandler
+from lark_channel import FeishuChannel
+from lark_channel import LogLevel as ChannelLogLevel
+from lark_channel import TransportConfig as ChannelTransportConfig
+from lark_channel.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
+from lark_oapi.api.im.v1 import GetChatRequest
 
 # NOTE: lark-oapi 的 event callback models 在不同版本中并不完整。
 # 本项目仅将 P2ImMessageReceiveV1 用于类型标注；运行时缺失不应导致 import 失败。
 try:  # pragma: no cover
-    from lark_oapi.event.callback.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1  # type: ignore
+    from lark_channel.event.callback.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1  # type: ignore
 except (ImportError, AttributeError):  # pragma: no cover
     P2ImMessageReceiveV1 = Any  # type: ignore
 
@@ -220,9 +224,11 @@ class FeishuWSClient:
     def __init__(self, message_callback: Callable[[str, str, str, Optional[str]], None]):
         self.settings = get_settings()
         self.message_callback = message_callback
-        self._client: Optional[lark.ws.Client] = None
+        self._client: Optional[ObservedLarkWSClient] = None
         self._closed = False
         self._api_client: Optional[lark.Client] = None
+        self._channel_client: Optional[FeishuChannel] = None
+        self._channel_client_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # ACPSessionManager: IdleHealth 相关协作者统一通过 IdleHealthConfig 注入，
         # 避免在构造函数中直接依赖具体 Telemetry/Service 实现。
@@ -480,6 +486,7 @@ class FeishuWSClient:
             main_bot_outbound_audit=main_bot_outbound_audit,
             main_bot_outbound_audit_failure=main_bot_outbound_audit_failure,
             tenant_key_resolver=get_current_tenant_key,
+            channel_client_factory=self._get_channel_client,
         )
 
         # Instantiate handlers (temp locals for registry population)
@@ -738,6 +745,12 @@ class FeishuWSClient:
         except Exception as e:
             logger.debug("停止scheduler失败: %s", get_error_detail(e))
 
+        try:
+            if self._channel_client is not None:
+                self._channel_client.stop()
+        except Exception as e:
+            logger.debug("停止普通模式 Channel SDK 客户端失败: %s", get_error_detail(e))
+
         # Best-effort shutdown lock-manager daemon threads so non-Application
         # callers (e.g. tests) do not leak background threads.
         try:
@@ -829,6 +842,28 @@ class FeishuWSClient:
                 .build()
             )
         return self._api_client
+
+    def _get_channel_client(self) -> FeishuChannel:
+        """Return the process-shared Channel SDK client for programming cards.
+
+        Inbound events use the dedicated raw Channel WebSocket client.  This
+        capability instance is outbound-only, so webhook transport prevents
+        accidental creation of a second WebSocket connection while retaining
+        the SDK's async CardKit and message APIs.
+        """
+        with self._channel_client_lock:
+            if self._channel_client is None:
+                timeout = float(self.settings.card.delivery_api_timeout)
+                self._channel_client = FeishuChannel(
+                    app_id=self.settings.app_id,
+                    app_secret=self.settings.app_secret,
+                    log_level=ChannelLogLevel.WARNING,
+                    transport=ChannelTransportConfig(
+                        kind="webhook",
+                        http_timeout_seconds=timeout,
+                    ),
+                )
+            return self._channel_client
 
 
 
@@ -2724,16 +2759,25 @@ class FeishuWSClient:
 
         注意：该方法是阻塞的；通常在主线程调用。
         """
-        event_handler = (
-            lark.EventDispatcherHandler.builder("", "")
+        event_builder = (
+            ChannelEventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self._handle_message)
             .register_p2_im_message_reaction_created_v1(self._handle_reaction_created)
-            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._handle_chat_entered)
             .register_p2_im_chat_member_bot_deleted_v1(self._handle_bot_deleted)
             .register_p2_im_message_message_read_v1(self._handle_message_read)
             .register_p2_card_action_trigger(self._handle_card_action)
-            .build()
         )
+        # lark-channel-sdk intentionally omits the legacy p2p-chat-entered
+        # callback. GhostAP's handler is a no-op, so register it only when a
+        # compatible SDK build exposes the old method.
+        register_chat_entered = getattr(
+            event_builder,
+            "register_p2_im_chat_access_event_bot_p2p_chat_entered_v1",
+            None,
+        )
+        if callable(register_chat_entered):
+            event_builder = register_chat_entered(self._handle_chat_entered)
+        event_handler = event_builder.build()
 
         self._message_cache.start_cleanup_thread()
         self._card_event_cache.start_cleanup_thread()
@@ -2786,7 +2830,8 @@ class FeishuWSClient:
                 # INFO/DEBUG. Lifecycle health is observed through hooks, so
                 # WARNING keeps diagnostics without persisting access_key or
                 # ticket query parameters.
-                log_level=lark.LogLevel.WARNING,
+                log_level=ChannelLogLevel.WARNING,
+                source="ghostap",
                 on_activity=self._ws_health_monitor.record_activity,
             )
             try:

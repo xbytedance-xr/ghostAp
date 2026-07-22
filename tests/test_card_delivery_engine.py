@@ -22,6 +22,7 @@ class MockCardClient:
         self.elements: list[dict] = []
         self.streaming_creates: list[dict] = []
         self.card_references: list[dict] = []
+        self.finishes: list[dict] = []
         self._create_counter = 0
         self._raise_on_update: Exception | None = None
         self._raise_on_streaming_create: Exception | None = None
@@ -62,6 +63,9 @@ class MockCardClient:
             "reply_to": reply_to, "idempotency_key": idempotency_key,
         })
         return msg_id
+
+    def finish_streaming_card(self, card_id, *, sequence):
+        self.finishes.append({"card_id": card_id, "sequence": sequence})
 
 
 class TestCardDeliveryCreate:
@@ -447,6 +451,49 @@ class TestStreamingFallback:
         outcomes = delivery.deliver("sess_1", "chat_abc", rendered)
         assert outcomes[0].kind == "applied"
         assert len(client.creates) == 1
+
+    def test_paginated_streams_finish_when_frozen_and_terminal(self):
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+        running = [
+            RenderedCard(
+                _card_json={"config": {"streaming_mode": True}, "body": {}},
+                structure_signature=f"run_{index}",
+                page_index=index,
+                total_pages=2,
+            )
+            for index in range(2)
+        ]
+
+        delivery.deliver("sess_stream_pages", "chat_abc", running)
+
+        assert len(client.finishes) == 1
+        first_finished = client.finishes[0]["card_id"]
+        binding = delivery.get_binding("sess_stream_pages")
+        assert binding.pages[0].is_streaming is False
+        assert binding.pages[1].is_streaming is True
+
+        terminal = [
+            RenderedCard(
+                _card_json={"config": {"streaming_mode": True}, "body": {}},
+                structure_signature=f"done_{index}",
+                page_index=index,
+                total_pages=2,
+            )
+            for index in range(2)
+        ]
+        delivery.deliver(
+            "sess_stream_pages",
+            "chat_abc",
+            terminal,
+            is_terminal=True,
+        )
+
+        assert len(client.finishes) == 2
+        assert {item["card_id"] for item in client.finishes} == {
+            first_finished,
+            binding.pages[1].card_id,
+        }
 
 
 class TestClose:

@@ -639,6 +639,40 @@ class TestProgrammingCardSession:
 
         assert pcs.session.state.terminal == "completed"
 
+    def test_subagent_terminal_delivery_stays_tracked_until_abort(self):
+        pcs, _ = _make_programming_session()
+        pcs.start()
+
+        class BlockingAgentSession:
+            closed = False
+            close_called = False
+            terminal_event = None
+
+            def dispatch(self, event):
+                self.terminal_event = event
+
+            def wait_delivery_idle(self, *, timeout):
+                return False
+
+            def close(self):
+                self.close_called = True
+                self.closed = True
+
+        agent = BlockingAgentSession()
+        pcs._agent_sessions["agent-blocked"] = agent
+
+        pcs.finish()
+
+        assert agent.terminal_event.type == CardEventType.COMPLETED
+        assert pcs._agent_sessions["agent-blocked"] is agent
+        assert pcs.wait_delivery_idle(timeout=0.1) is False
+        assert pcs.terminal_delivery_succeeded() is False
+
+        pcs.abort()
+
+        assert agent.close_called is True
+        assert pcs._agent_sessions == {}
+
     def test_agent_task_uses_card_session_factory_create_subagent_when_available(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 

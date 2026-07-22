@@ -294,6 +294,41 @@ class ProgrammingCardSession:
                 return first_page.message_id
         return None
 
+    def wait_until_visible(self, timeout: float) -> bool:
+        """Wait for the initial async delivery and confirm a visible message."""
+        current = self._rotator.current
+        if not current.wait_delivery_idle(timeout=timeout):
+            return False
+        return self.get_message_id() is not None
+
+    def wait_delivery_idle(self, timeout: float) -> bool:
+        """Wait until main and subagent card mutations have completed."""
+        deadline = time.monotonic() + timeout
+        sessions = [self._rotator.current, *self._agent_sessions.values()]
+        for session in sessions:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not session.wait_delivery_idle(timeout=remaining):
+                return False
+        return True
+
+    def terminal_delivery_succeeded(self) -> bool:
+        """Return whether every terminal card delivery closed successfully."""
+        succeeded = self._rotator.current.closed and all(
+            session.closed for session in self._agent_sessions.values()
+        )
+        if succeeded:
+            self._agent_sessions.clear()
+        return succeeded
+
+    def abort(self) -> None:
+        """Stop local activity and close the card session without more delivery."""
+        self._cancel_timer()
+        self._stop_ticker()
+        for session in self._agent_sessions.values():
+            session.close()
+        self._agent_sessions.clear()
+        self._rotator.close()
+
     def get_final_text(self) -> str:
         """Extract accumulated text content from card state for context recording."""
         self._flush_now()
@@ -622,7 +657,6 @@ class ProgrammingCardSession:
             if existing is not None and existing.get("status") != terminal_status:
                 self._agent_summaries[tool_id] = {**existing, "status": terminal_status}
                 summary_changed = True
-        self._agent_sessions.clear()
         if summary_changed and not self._rotator.current.closed:
             try:
                 self._rotator.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._agent_summaries.values())))

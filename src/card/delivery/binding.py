@@ -17,6 +17,7 @@ class PageBinding:
     page_index: int = 0
     source_page_index: int = 0
     is_frozen: bool = False
+    is_streaming: bool = False
 
 
 @dataclass
@@ -64,6 +65,7 @@ class BindingStore:
         signature: str,
         last_text: str = "",
         source_page_index: int | None = None,
+        is_streaming: bool = False,
     ) -> None:
         """Set or update a page binding."""
         with self._lock:
@@ -79,6 +81,7 @@ class BindingStore:
                 source_page_index=(
                     page_index if source_page_index is None else source_page_index
                 ),
+                is_streaming=is_streaming,
             )
             if page_index >= binding.message_high_watermark:
                 binding.message_high_watermark = page_index
@@ -133,6 +136,22 @@ class BindingStore:
             page = binding.pages.get(page_index)
             if page is not None:
                 page.is_frozen = frozen
+
+    def mark_streaming(
+        self,
+        session_id: str,
+        page_index: int,
+        *,
+        streaming: bool,
+    ) -> None:
+        """Record whether a visible page still has an open CardKit stream."""
+        with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is None:
+                return
+            page = binding.pages.get(page_index)
+            if page is not None:
+                page.is_streaming = streaming
 
     def remove_page(self, session_id: str, page_index: int) -> PageBinding | None:
         """Remove a page from the binding."""

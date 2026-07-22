@@ -1,6 +1,6 @@
 """Feishu WebSocket lifecycle helpers.
 
-This module keeps low-level lark-oapi WebSocket lifecycle observation out of
+This module keeps low-level lark-channel WebSocket lifecycle observation out of
 ``ws_client.py`` so the main client can stay focused on orchestration.
 """
 
@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional
 
-import lark_oapi as lark
-from lark_oapi.ws.const import HEADER_TYPE
-from lark_oapi.ws.enum import MessageType
+from lark_channel import ws
+from lark_channel.ws.const import HEADER_TYPE
+from lark_channel.ws.enum import MessageType
 
 
 class WSLifecycleAction(str, Enum):
@@ -39,8 +39,8 @@ def frame_header_value(frame: Any, key: str) -> Optional[str]:
     return None
 
 
-class ObservedLarkWSClient(lark.ws.Client):
-    """Wrap lark-oapi WS client to expose connection activity hooks."""
+class ObservedLarkWSClient(ws.Client):
+    """Wrap the official Channel SDK WS client with activity hooks."""
 
     def __init__(self, *args, on_activity: Callable[[str], None], **kwargs):
         super().__init__(*args, **kwargs)
@@ -50,11 +50,11 @@ class ObservedLarkWSClient(lark.ws.Client):
         await super()._connect()
         self._on_activity("connected")
 
-    async def _disconnect(self):
-        try:
-            return await super()._disconnect()
-        finally:
+    async def _disconnect(self, *, expected_conn=None):
+        disconnected = await super()._disconnect(expected_conn=expected_conn)
+        if disconnected:
             self._on_activity("disconnected")
+        return disconnected
 
     async def _handle_control_frame(self, frame):
         message_type = frame_header_value(frame, HEADER_TYPE)

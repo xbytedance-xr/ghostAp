@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -185,16 +186,55 @@ class PageMutator:
 
         try:
             card_payload = _guard_payload(card.to_feishu_json())
-            is_streaming = card_payload.get("config", {}).get("streaming_mode", False)
+            is_streaming = bool(
+                card_payload.get("config", {}).get("streaming_mode", False)
+                or getattr(self._client, "preallocate_cards", False) is True
+            )
+            if is_streaming:
+                card_payload.setdefault("config", {})["streaming_mode"] = True
             idempotency_key = _page_create_idempotency_key(session_id, card.page_index)
+            stream_open = False
+            card_id = ""
 
             if is_streaming:
                 try:
-                    card_id = self._client.create_streaming_card(card_payload)
+                    target_aware_create = getattr(
+                        self._client,
+                        "create_streaming_card_for_target",
+                        None,
+                    )
+                    if (
+                        getattr(
+                            self._client,
+                            "target_aware_streaming_create",
+                            False,
+                        )
+                        is True
+                        and callable(target_aware_create)
+                    ):
+                        card_id = target_aware_create(
+                            card_payload,
+                            target=reply_to or chat_id,
+                            operation="reply" if reply_to else "create",
+                        )
+                    else:
+                        card_id = self._client.create_streaming_card(card_payload)
                     message_id = self._client.send_card_reference(
                         chat_id, card_id, reply_to=reply_to, reply_in_thread=reply_in_thread, idempotency_key=idempotency_key
                     )
+                    stream_open = True
                 except Exception:
+                    if getattr(self._client, "allow_streaming_fallback", True) is False:
+                        if card_id:
+                            try:
+                                self._client.finish_streaming_card(card_id, sequence=1)
+                            except Exception as cleanup_exc:
+                                logger.debug(
+                                    "Failed to close unreferenced streaming card %s: %s",
+                                    card_id,
+                                    str(cleanup_exc),
+                                )
+                        raise
                     logger.debug("Streaming card creation failed, falling back to IM API")
                     message_id, card_id = self._client.create_card(
                         chat_id, card_payload, reply_to=reply_to, reply_in_thread=reply_in_thread, idempotency_key=idempotency_key
@@ -213,6 +253,7 @@ class PageMutator:
                 signature=card.structure_signature,
                 last_text=last_text,
                 source_page_index=source_page_index,
+                is_streaming=stream_open,
             )
             return MutationOutcome(kind="applied", message=f"created:{message_id}")
         except TransportError as e:
@@ -233,14 +274,37 @@ class PageMutator:
             return MutationOutcome(kind="reconcile", message=str(e))
 
     def update_page(
-        self, session_id: str, page: PageBinding, card: RenderedCard
+        self,
+        session_id: str,
+        page: PageBinding,
+        card: RenderedCard,
+        *,
+        force_finish_streaming: bool = False,
     ) -> "MutationOutcome":
         """Update card structure via PATCH API."""
 
         try:
             seq = self._sequences.next_sequence(page.card_id)
             card_payload = _guard_payload(card.to_feishu_json())
-            self._client.update_card(page.card_id, card_payload, sequence=seq)
+            finish_stream = getattr(self._client, "finish_streaming_card", None)
+            should_finish = (
+                page.is_streaming
+                and callable(finish_stream)
+                and force_finish_streaming
+            )
+            update_payload = card_payload
+            if should_finish:
+                update_payload = copy.deepcopy(card_payload)
+                update_payload.setdefault("config", {})["streaming_mode"] = True
+            self._client.update_card(page.card_id, update_payload, sequence=seq)
+            if should_finish:
+                finish_sequence = self._sequences.next_sequence(page.card_id)
+                finish_stream(page.card_id, sequence=finish_sequence)
+                self._bindings.mark_streaming(
+                    session_id,
+                    page.page_index,
+                    streaming=False,
+                )
             self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
             if card.active_element:
                 self._bindings.update_text(session_id, page.page_index, _actual_active_text(card, card_payload))
@@ -315,6 +379,45 @@ class PageMutator:
         except Exception as e:
             logger.debug("Element update failed (%s), falling back to full update", str(e))
             return self.update_page(session_id, page, card)
+
+    def finish_streaming_page(
+        self,
+        session_id: str,
+        page: PageBinding,
+    ) -> "MutationOutcome":
+        """Close one open CardKit stream without removing its page binding."""
+        finish_stream = getattr(self._client, "finish_streaming_card", None)
+        if not page.is_streaming or not callable(finish_stream):
+            return MutationOutcome(kind="skipped")
+        try:
+            sequence = self._sequences.next_sequence(page.card_id)
+            finish_stream(page.card_id, sequence=sequence)
+            self._bindings.mark_streaming(
+                session_id,
+                page.page_index,
+                streaming=False,
+            )
+            return MutationOutcome(kind="applied", message=f"finished:{page.card_id}")
+        except TimeoutError as exc:
+            logger.warning(
+                "Card stream finish timed out on %s: %s",
+                page.card_id,
+                str(exc),
+            )
+            return MutationOutcome(kind="reconcile", message="finish:timeout")
+        except SequenceConflictError as exc:
+            self._sequences.raise_floor(page.card_id, exc.next_floor)
+            return MutationOutcome(kind="reconcile", message="finish:sequence_conflict")
+        except TransportError as exc:
+            if exc.needs_recreate:
+                self._bindings.remove_page(session_id, page.page_index)
+                self._sequences.reset(page.card_id)
+                return MutationOutcome(kind="reconcile", message=f"recreate:{exc.code}")
+            logger.warning("Card stream finish failed on %s: %s", page.card_id, str(exc))
+            return MutationOutcome(kind="reconcile", message=f"finish:{exc.code}")
+        except Exception as exc:
+            logger.warning("Card stream finish failed on %s: %s", page.card_id, str(exc))
+            return MutationOutcome(kind="reconcile", message="finish:error")
 
     def finalize_page(self, session_id: str, page: PageBinding) -> None:
         """Finalize a stale page."""

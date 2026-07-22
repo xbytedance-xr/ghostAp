@@ -809,8 +809,8 @@ class ProgrammingModeHandler(BaseHandler):
         *, _repo_lock_mgr=None, _root_path: str | None = None,
     ):
         from ...acp.models import ACPEvent
+        from ...card.delivery.channel_client import LarkChannelCardAPIClient
         from ...card.delivery.factory import create_card_delivery
-        from ...card.delivery.feishu_client import FeishuCardAPIClient
         from ...card.programming_adapter import ProgrammingCardSession, build_programming_metadata
         from ...card.session import CardSession
         from ...card.session.factory import CardSessionFactory
@@ -843,16 +843,42 @@ class ProgrammingModeHandler(BaseHandler):
             working_dir=project_path,
         )
 
+        # Ordinary programming cards use the shared official Channel SDK.
+        # If it could not be initialized, preserve command execution through
+        # the existing text fallback instead of silently reverting transports.
+        channel_client_factory = self.ctx.channel_client_factory
+        if not callable(channel_client_factory):
+            logger.warning("lark-channel 客户端不可用，回退到非流式文本输出")
+            self._handle_response_non_streaming(
+                message_id, chat_id, text, session, project, global_working_dir,
+                _repo_lock_mgr=_repo_lock_mgr, _root_path=_root_path,
+            )
+            return
+
+        try:
+            api_client = LarkChannelCardAPIClient(
+                channel_client_factory(),
+                preallocate_cards=True,
+                default_reply_in_thread=self.settings.default_reply_mode == "thread",
+                outbound_audit=self.ctx.main_bot_outbound_audit,
+                outbound_audit_failure=self.ctx.main_bot_outbound_audit_failure,
+                tenant_key_resolver=self.ctx.tenant_key_resolver,
+                outbound_target_aliases=lambda target: self._reply_audit_aliases(
+                    self._resolve_origin(target)
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "初始化 lark-channel 卡片客户端失败，回退到非流式文本输出: %s",
+                str(exc),
+            )
+            self._handle_response_non_streaming(
+                message_id, chat_id, text, session, project, global_working_dir,
+                _repo_lock_mgr=_repo_lock_mgr, _root_path=_root_path,
+            )
+            return
+
         # Create card delivery + session
-        api_client = FeishuCardAPIClient(
-            self.ctx.api_client_factory(),
-            outbound_audit=self.ctx.main_bot_outbound_audit,
-            outbound_audit_failure=self.ctx.main_bot_outbound_audit_failure,
-            tenant_key_resolver=self.ctx.tenant_key_resolver,
-            outbound_target_aliases=lambda target: self._reply_audit_aliases(
-                self._resolve_origin(target)
-            ),
-        )
         delivery = create_card_delivery(api_client)
         from src.card.session.config import SessionConfig
         config = SessionConfig(metadata=metadata, reply_to=message_id)
@@ -890,6 +916,22 @@ class ProgrammingModeHandler(BaseHandler):
         except Exception as e:
             logger.warning("创建流式卡片失败: %s", str(e))
             # Fallback to non-streaming text mode
+            self._handle_response_non_streaming(
+                message_id, chat_id, text, session, project, global_working_dir,
+                _repo_lock_mgr=_repo_lock_mgr, _root_path=_root_path,
+            )
+            return
+
+        try:
+            delivery_timeout = max(
+                2.0,
+                2.0 * float(self.settings.card.delivery_api_timeout) + 2.0,
+            )
+        except Exception:
+            delivery_timeout = 12.0
+        if not prog_session.wait_until_visible(delivery_timeout):
+            logger.warning("首张 lark-channel 编程卡片未成功投递，回退到非流式文本输出")
+            prog_session.abort()
             self._handle_response_non_streaming(
                 message_id, chat_id, text, session, project, global_working_dir,
                 _repo_lock_mgr=_repo_lock_mgr, _root_path=_root_path,
@@ -990,6 +1032,15 @@ class ProgrammingModeHandler(BaseHandler):
             _streaming_hb_stop.set()
             if _streaming_hb is not None:
                 _streaming_hb.join(timeout=2)
+            delivery_idle = prog_session.wait_delivery_idle(delivery_timeout)
+            terminal_delivered = (
+                delivery_idle and prog_session.terminal_delivery_succeeded()
+            )
+            if not terminal_delivered:
+                logger.warning("lark-channel 编程卡片终态投递失败，改发文本结果")
+                prog_session.abort()
+                if final_response:
+                    self.reply_text(message_id, final_response)
 
         logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
 

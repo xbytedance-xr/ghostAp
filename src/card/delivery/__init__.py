@@ -9,6 +9,7 @@ Public API:
 """
 
 from src.card.delivery.binding import BindingStore, DeliveryBinding, PageBinding
+from src.card.delivery.channel_client import LarkChannelCardAPIClient
 from src.card.delivery.engine import CardAPIClient, CardDelivery, MutationOutcome, SequenceConflictError, TransportError
 from src.card.delivery.feishu_client import FeishuCardAPIClient
 from src.card.delivery.lock_pool import PoolStats
@@ -23,6 +24,7 @@ __all__ = [
     "DeliveryRegistry",
     "delivery_registry",
     "FeishuCardAPIClient",
+    "LarkChannelCardAPIClient",
     "MutationOutcome",
     "PoolStats",
     "SequenceConflictError",

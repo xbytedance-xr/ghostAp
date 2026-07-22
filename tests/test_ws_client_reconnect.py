@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import inspect
 import threading
@@ -37,7 +38,7 @@ def test_employee_hire_status_uuid_is_stable_per_intent_and_status() -> None:
 def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
     """Ensure WS client doesn't stop the whole service when lark client exits.
 
-    We simulate lark-oapi WS client's `.start()` returning unexpectedly. GhostAP
+    We simulate lark-channel WS client's `.start()` returning unexpectedly. GhostAP
     should reconnect (create client again) until `close()` is called.
     """
 
@@ -112,7 +113,8 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
     t.join(timeout=1.0)
     assert len(created) >= 2
     assert membership_audits == [True]
-    assert all(item["log_level"] == ws.lark.LogLevel.WARNING for item in created)
+    assert all(item["log_level"] == ws.ChannelLogLevel.WARNING for item in created)
+    assert all(item["source"] == "ghostap" for item in created)
     assert not t.is_alive()
 
 
@@ -134,6 +136,82 @@ def test_ws_lifecycle_helpers_are_extracted_from_ws_client():
     assert ObservedLarkWSClient.__name__ == "ObservedLarkWSClient"
     assert frame_header_value(frame, "type") == "pong"
     assert frame_header_value(frame, "missing") is None
+
+
+def test_observed_ws_client_uses_official_channel_sdk() -> None:
+    from lark_channel.ws import Client as ChannelWSClient
+
+    from src.feishu.ws_lifecycle import ObservedLarkWSClient
+
+    assert issubclass(ObservedLarkWSClient, ChannelWSClient)
+
+
+def test_observed_ws_disconnect_forwards_expected_connection(monkeypatch) -> None:
+    from lark_channel.ws import Client as ChannelWSClient
+
+    from src.feishu.ws_lifecycle import ObservedLarkWSClient
+
+    expected = object()
+    forwarded = []
+    activity = []
+
+    async def fake_disconnect(_self, *, expected_conn=None):
+        forwarded.append(expected_conn)
+        return True
+
+    monkeypatch.setattr(ChannelWSClient, "_disconnect", fake_disconnect)
+    client = ObservedLarkWSClient.__new__(ObservedLarkWSClient)
+    client._on_activity = activity.append
+
+    result = asyncio.run(client._disconnect(expected_conn=expected))
+
+    assert result is True
+    assert forwarded == [expected]
+    assert activity == ["disconnected"]
+
+
+def test_observed_ws_disconnect_ignores_stale_expected_connection(monkeypatch) -> None:
+    from lark_channel.ws import Client as ChannelWSClient
+
+    from src.feishu.ws_lifecycle import ObservedLarkWSClient
+
+    async def stale_disconnect(_self, *, expected_conn=None):
+        return False
+
+    monkeypatch.setattr(ChannelWSClient, "_disconnect", stale_disconnect)
+    activity = []
+    client = ObservedLarkWSClient.__new__(ObservedLarkWSClient)
+    client._on_activity = activity.append
+
+    assert asyncio.run(client._disconnect(expected_conn=object())) is False
+    assert activity == []
+
+
+def test_channel_client_factory_returns_one_outbound_webhook_client(monkeypatch) -> None:
+    import src.feishu.ws_client as ws_client_module
+
+    class _FakeChannel:
+        def __init__(self, **kwargs) -> None:
+            self.config = SimpleNamespace(transport=kwargs["transport"])
+
+    monkeypatch.setattr(ws_client_module, "FeishuChannel", _FakeChannel)
+    FeishuWSClient = ws_client_module.FeishuWSClient
+
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client.settings = SimpleNamespace(
+        app_id="cli_test",
+        app_secret="secret",
+        card=SimpleNamespace(delivery_api_timeout=17.5),
+    )
+    client._channel_client = None
+    client._channel_client_lock = threading.Lock()
+
+    first = client._get_channel_client()
+    second = client._get_channel_client()
+
+    assert first is second
+    assert first.config.transport.kind == "webhook"
+    assert first.config.transport.http_timeout_seconds == 17.5
 
 
 def test_main_ws_acknowledges_bot_deleted_events() -> None:
