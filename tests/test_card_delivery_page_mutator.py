@@ -78,6 +78,37 @@ def _make_streaming_payload(content: str) -> dict:
 
 
 class TestCreatePage:
+    def test_create_audit_fallback_preserves_logical_source_page(self):
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+        bindings.create("sess_1", "chat_1")
+        calls = 0
+
+        def reject_then_fallback(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise TransportError(
+                    "Card create failed: code=230028, msg=do not pass the audit",
+                    code=230028,
+                )
+            return "fallback_msg", "fallback_card"
+
+        client.create_card = reject_then_fallback
+        outcome = mutator.create_page(
+            "sess_1",
+            "chat_1",
+            _make_card(page_index=4),
+            source_page_index=1,
+        )
+
+        assert outcome.kind == "applied"
+        binding = bindings.get("sess_1")
+        assert binding.pages[4].source_page_index == 1
+        assert binding.latest_source_page_index == 1
+
     def test_create_page_success(self):
         client = MockClient()
         bindings = BindingStore()

@@ -239,6 +239,30 @@ class TestMainReducer:
         assert phase_blocks[0].phase_name == "plan"
         assert "方案规划" in phase_blocks[0].content
 
+    def test_block_cap_preserves_active_phase_until_long_deep_run_finishes(
+        self, caplog
+    ):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+        s = reduce_card_state(
+            s,
+            CardEvent.phase_started(1, "build", content="执行构建中"),
+        )
+        for index in range(101):
+            s = reduce_card_state(s, CardEvent.text_started(f"long_run_{index}"))
+
+        assert len(s.blocks) == 100
+        assert any(block.block_id == "phase_1_build" for block in s.blocks)
+
+        with caplog.at_level("WARNING"):
+            s = reduce_card_state(s, CardEvent.phase_done(1, "build", "构建完成"))
+
+        assert s.engine_ext.phase_info is None
+        assert not [
+            record
+            for record in caplog.records
+            if "PHASE_DONE received without prior PHASE_STARTED" in record.message
+        ]
+
 
 class TestBlockedReducer:
     """BLOCKED event produces terminal state with restart button."""

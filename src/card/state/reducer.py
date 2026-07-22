@@ -35,6 +35,28 @@ MAX_COMPLETED_TOOL_BLOCKS = 50
 MAX_TOTAL_BLOCKS = 100
 
 
+def _trim_blocks_to_safety_cap(blocks: tuple) -> tuple:
+    """Bound state while retaining the active phase lifecycle anchor."""
+    if len(blocks) <= MAX_TOTAL_BLOCKS:
+        return blocks
+
+    protected = {
+        index
+        for index, block in enumerate(blocks)
+        if block.kind == "phase" and block.status == "active"
+    }
+    if len(protected) >= MAX_TOTAL_BLOCKS:
+        keep = sorted(protected)[-MAX_TOTAL_BLOCKS:]
+        return tuple(blocks[index] for index in keep)
+
+    keep = set(protected)
+    for index in range(len(blocks) - 1, -1, -1):
+        if len(keep) >= MAX_TOTAL_BLOCKS:
+            break
+        keep.add(index)
+    return tuple(blocks[index] for index in sorted(keep))
+
+
 # --- Inline handlers for events that don't warrant their own module ---
 
 def _reduce_tool_model_changed(state: CardState, event: CardEvent) -> CardState:
@@ -346,8 +368,12 @@ def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardM
                 new_state = replace(new_state, blocks=trimmed)
 
         # Safety cap: prevent unbounded block accumulation from any path.
-        # Keep the most recent blocks when total exceeds the limit.
+        # Keep the active phase anchor plus the most recent content so a long
+        # run can still close its phase lifecycle without a false warning.
         if len(new_state.blocks) > MAX_TOTAL_BLOCKS:
-            new_state = replace(new_state, blocks=new_state.blocks[-MAX_TOTAL_BLOCKS:])
+            new_state = replace(
+                new_state,
+                blocks=_trim_blocks_to_safety_cap(new_state.blocks),
+            )
 
     return new_state

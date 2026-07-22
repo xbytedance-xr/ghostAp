@@ -179,6 +179,7 @@ class PageMutator:
         *,
         reply_to: str | None = None,
         reply_in_thread: bool | None = None,
+        source_page_index: int | None = None,
     ) -> "MutationOutcome":
         """Create a new card page via API."""
 
@@ -211,6 +212,7 @@ class PageMutator:
                 card_id=card_id,
                 signature=card.structure_signature,
                 last_text=last_text,
+                source_page_index=source_page_index,
             )
             return MutationOutcome(kind="applied", message=f"created:{message_id}")
         except TransportError as e:
@@ -221,6 +223,7 @@ class PageMutator:
                     card,
                     reply_to=reply_to,
                     reply_in_thread=reply_in_thread,
+                    source_page_index=source_page_index,
                     error=e,
                 )
             logger.warning("Card create failed: %s", str(e))
@@ -253,8 +256,8 @@ class PageMutator:
             return MutationOutcome(kind="reconcile", message="sequence_conflict")
         except TransportError as e:
             if e.needs_recreate:
-                logger.warning(
-                    "Stale card binding on %s (code=%d), removing binding to force recreation",
+                logger.info(
+                    "Stale card binding on %s (code=%d), removing binding for replacement",
                     page.card_id, e.code,
                 )
                 self._bindings.remove_page(session_id, page.page_index)
@@ -295,8 +298,8 @@ class PageMutator:
             return self.update_page(session_id, page, card)
         except TransportError as e:
             if e.needs_recreate:
-                logger.warning(
-                    "Stale card binding on %s (code=%d), removing binding to force recreation",
+                logger.info(
+                    "Stale card binding on %s (code=%d), removing binding for replacement",
                     page.card_id, e.code,
                 )
                 self._bindings.remove_page(session_id, page.page_index)
@@ -366,6 +369,7 @@ class PageMutator:
         *,
         reply_to: str | None = None,
         reply_in_thread: bool | None = None,
+        source_page_index: int | None = None,
         error: TransportError,
     ) -> MutationOutcome:
         logger.error(
@@ -389,6 +393,7 @@ class PageMutator:
                 card_id=card_id,
                 signature=card.structure_signature,
                 last_text="card_audit_rejected",
+                source_page_index=source_page_index,
             )
             return MutationOutcome(kind="applied", message=f"fallback_audit_rejected:{error.code}")
         except Exception as fallback_exc:

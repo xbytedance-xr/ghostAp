@@ -15,6 +15,7 @@ class PageBinding:
     signature: str = ""
     last_text: str = ""
     page_index: int = 0
+    source_page_index: int = 0
     is_frozen: bool = False
 
 
@@ -26,6 +27,8 @@ class DeliveryBinding:
     chat_id: str = ""
     pages: dict[int, PageBinding] = field(default_factory=dict)
     segment_index: int = 0
+    message_high_watermark: int = -1
+    latest_source_page_index: int = -1
 
 
 class BindingStore:
@@ -60,6 +63,7 @@ class BindingStore:
         card_id: str,
         signature: str,
         last_text: str = "",
+        source_page_index: int | None = None,
     ) -> None:
         """Set or update a page binding."""
         with self._lock:
@@ -72,7 +76,15 @@ class BindingStore:
                 signature=signature,
                 last_text=last_text,
                 page_index=page_index,
+                source_page_index=(
+                    page_index if source_page_index is None else source_page_index
+                ),
             )
+            if page_index >= binding.message_high_watermark:
+                binding.message_high_watermark = page_index
+                binding.latest_source_page_index = (
+                    page_index if source_page_index is None else source_page_index
+                )
 
     def update_text(self, session_id: str, page_index: int, text: str) -> None:
         """Update the last_text for a page (after element_content push)."""
@@ -93,6 +105,24 @@ class BindingStore:
             page = binding.pages.get(page_index)
             if page is not None:
                 page.signature = signature
+
+    def update_source_page_index(
+        self,
+        session_id: str,
+        page_index: int,
+        source_page_index: int,
+    ) -> None:
+        """Record which logical renderer page occupies a visible message page."""
+        with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is None:
+                return
+            page = binding.pages.get(page_index)
+            if page is None:
+                return
+            page.source_page_index = source_page_index
+            if page_index == binding.message_high_watermark:
+                binding.latest_source_page_index = source_page_index
 
     def mark_frozen(self, session_id: str, page_index: int, *, frozen: bool = True) -> None:
         """Mark whether a page is an immutable history snapshot."""

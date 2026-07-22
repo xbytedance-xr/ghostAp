@@ -202,80 +202,217 @@ class CardDelivery:
 
         if binding is None:
             binding = self._bindings.create(session_id, chat_id)
+            previous_page_index: int | None = None
             for card in ordered:
                 outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
                 outcomes.append(outcome)
                 if outcome.kind != "applied":
                     break
-                if card.page_index < latest_rendered_idx:
-                    self._bindings.mark_frozen(session_id, card.page_index)
+                if previous_page_index is not None:
+                    self._bindings.mark_frozen(session_id, previous_page_index)
+                previous_page_index = card.page_index
             return outcomes
+
+        message_high_watermark = binding.message_high_watermark
+
+        # A failed append leaves the visible slot reserved by the monotonic high
+        # watermark while no binding exists for it. Retry from the same logical
+        # source page at the same next visible index/idempotency key.
+        if (
+            message_high_watermark >= 0
+            and message_high_watermark not in binding.pages
+        ):
+            return self._append_from_source(
+                session_id,
+                chat_id,
+                binding,
+                ordered,
+                source_page_index=binding.latest_source_page_index,
+                reply_to=reply_to,
+                reply_in_thread=reply_in_thread,
+            )
 
         if not binding.pages:
+            previous_page_index = None
             for card in ordered:
                 outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
                 outcomes.append(outcome)
                 if outcome.kind != "applied":
                     break
-                if card.page_index < latest_rendered_idx:
-                    self._bindings.mark_frozen(session_id, card.page_index)
+                if previous_page_index is not None:
+                    self._bindings.mark_frozen(session_id, previous_page_index)
+                previous_page_index = card.page_index
             return outcomes
 
-        message_high_watermark = max(binding.pages)
+        latest_page = binding.pages[message_high_watermark]
+        latest_source_idx = latest_page.source_page_index
 
         # Renderer compaction can reduce its page count. Never delete or reuse an
         # older Feishu message: move the renderer's newest state onto the existing
         # highest message and preserve all lower bindings as immutable history.
-        if latest_rendered_idx < message_high_watermark:
+        if latest_rendered_idx < latest_source_idx:
             latest_card = self._remap_latest_card(
                 ordered[-1],
                 page_index=message_high_watermark,
                 total_pages=message_high_watermark + 1,
             )
-            latest_page = binding.pages[message_high_watermark]
             self._bindings.mark_frozen(
                 session_id,
                 message_high_watermark,
                 frozen=False,
             )
-            outcomes.append(self._mutate_page(session_id, latest_page, latest_card))
+            outcome = self._mutate_page(session_id, latest_page, latest_card)
+            if self._is_stale_binding_outcome(outcome):
+                outcome = self._append_visible_page(
+                    session_id,
+                    chat_id,
+                    binding,
+                    ordered[-1],
+                    reply_to=reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
+            elif outcome.kind == "applied":
+                self._bindings.update_source_page_index(
+                    session_id,
+                    message_high_watermark,
+                    latest_rendered_idx,
+                )
+            outcomes.append(outcome)
             return outcomes
 
+        pending_freeze_index: int | None = None
         for card in ordered:
             page_idx = card.page_index
-            existing_page = binding.pages.get(page_idx)
+            existing_page = self._latest_page_for_source(binding, page_idx)
 
-            if (
-                page_idx < message_high_watermark
-                or (existing_page is not None and existing_page.is_frozen)
-            ):
+            if existing_page is not None and existing_page.is_frozen:
+                outcomes.append(MutationOutcome(kind="skipped", message="history_page_frozen"))
+                continue
+            if existing_page is None and page_idx < latest_source_idx:
                 outcomes.append(MutationOutcome(kind="skipped", message="history_page_frozen"))
                 continue
 
             if existing_page is None:
-                outcome = self._create_page(
+                outcome = self._append_visible_page(
                     session_id,
                     chat_id,
+                    binding,
                     card,
                     reply_to=reply_to,
                     reply_in_thread=reply_in_thread,
                 )
             else:
-                outcome = self._mutate_page(session_id, existing_page, card)
+                target_card = card
+                if existing_page.page_index != card.page_index:
+                    target_card = self._remap_latest_card(
+                        card,
+                        page_index=existing_page.page_index,
+                        total_pages=existing_page.page_index + 1,
+                    )
+                outcome = self._mutate_page(session_id, existing_page, target_card)
+            if self._is_stale_binding_outcome(outcome):
+                outcome = self._append_visible_page(
+                    session_id,
+                    chat_id,
+                    binding,
+                    card,
+                    reply_to=reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
             outcomes.append(outcome)
-
-            if self._is_recreate_outcome(outcome):
-                break
             if outcome.kind == "reconcile":
                 break
 
+            if pending_freeze_index is not None:
+                self._bindings.mark_frozen(session_id, pending_freeze_index)
+                pending_freeze_index = None
+
             # When pagination grows, the previous live page is first flushed with
-            # its boundary content above, then becomes immutable. Intermediate new
-            # pages are likewise frozen; only the newest page remains live.
+            # its boundary content above. Freeze it only after the following page
+            # is confirmed visible, so a failed append leaves a live page that a
+            # later compact terminal render can still update.
             if page_idx < latest_rendered_idx:
-                self._bindings.mark_frozen(session_id, page_idx)
+                pending_freeze_index = binding.message_high_watermark
 
         return outcomes
+
+    @staticmethod
+    def _latest_page_for_source(binding, source_page_index: int) -> PageBinding | None:
+        matches = [
+            page
+            for page in binding.pages.values()
+            if page.source_page_index == source_page_index
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda page: page.page_index)
+
+    def _append_from_source(
+        self,
+        session_id: str,
+        chat_id: str,
+        binding,
+        ordered: list[RenderedCard],
+        *,
+        source_page_index: int,
+        reply_to: str | None,
+        reply_in_thread: bool | None,
+    ) -> list[MutationOutcome]:
+        """Retry a missing live page and append any newer logical pages."""
+        start = next(
+            (
+                index
+                for index, card in enumerate(ordered)
+                if card.page_index == source_page_index
+            ),
+            len(ordered) - 1,
+        )
+        outcomes: list[MutationOutcome] = []
+        pending_freeze_index: int | None = None
+        for index, card in enumerate(ordered[start:], start=start):
+            outcome = self._append_visible_page(
+                session_id,
+                chat_id,
+                binding,
+                card,
+                reply_to=reply_to,
+                reply_in_thread=reply_in_thread,
+            )
+            outcomes.append(outcome)
+            if outcome.kind != "applied":
+                break
+            if pending_freeze_index is not None:
+                self._bindings.mark_frozen(session_id, pending_freeze_index)
+                pending_freeze_index = None
+            if index < len(ordered) - 1:
+                pending_freeze_index = binding.message_high_watermark
+        return outcomes
+
+    def _append_visible_page(
+        self,
+        session_id: str,
+        chat_id: str,
+        binding,
+        card: RenderedCard,
+        *,
+        reply_to: str | None,
+        reply_in_thread: bool | None,
+    ) -> MutationOutcome:
+        """Append one logical renderer page at the next visible message index."""
+        replacement_index = binding.message_high_watermark + 1
+        replacement = self._remap_latest_card(
+            card,
+            page_index=replacement_index,
+            total_pages=replacement_index + 1,
+        )
+        return self._create_page(
+            session_id,
+            chat_id,
+            replacement,
+            reply_to=reply_to,
+            reply_in_thread=reply_in_thread,
+            source_page_index=card.page_index,
+        )
 
     @staticmethod
     def _remap_latest_card(
@@ -368,9 +505,17 @@ class CardDelivery:
         *,
         reply_to: str | None = None,
         reply_in_thread: bool | None = None,
+        source_page_index: int | None = None,
     ) -> MutationOutcome:
         """Create a new card page via API."""
-        return self._mutator.create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
+        return self._mutator.create_page(
+            session_id,
+            chat_id,
+            card,
+            reply_to=reply_to,
+            reply_in_thread=reply_in_thread,
+            source_page_index=source_page_index,
+        )
 
     def _update_page(
         self, session_id: str, page: PageBinding, card: RenderedCard
@@ -391,3 +536,14 @@ class CardDelivery:
     @staticmethod
     def _is_recreate_outcome(outcome: MutationOutcome) -> bool:
         return outcome.kind == "reconcile" and outcome.message.startswith(_RECREATE_OUTCOME_PREFIX)
+
+    @staticmethod
+    def _is_stale_binding_outcome(outcome: MutationOutcome) -> bool:
+        """Return whether a confirmed-missing binding is safe to replace now."""
+        if not CardDelivery._is_recreate_outcome(outcome):
+            return False
+        try:
+            code = int(outcome.message.removeprefix(_RECREATE_OUTCOME_PREFIX))
+        except ValueError:
+            return False
+        return code in TransportError.RECREATE_CODES
