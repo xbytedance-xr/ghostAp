@@ -217,6 +217,7 @@ class TestACPStreamBridgeBehavior:
         reasoning_deltas = [e for e in disp.events if e.type == CardEventType.REASONING_DELTA]
         assert [e.payload["block_id"] for e in reasoning_started] == ["_active_reasoning"]
         assert {e.payload["block_id"] for e in reasoning_deltas} == {"_active_reasoning"}
+        assert [e.payload["text"] for e in reasoning_deltas] == ["引用", "\n继续分析"]
 
     def test_interleaved_text_chunks_from_different_sources_use_separate_blocks(self):
         """Concurrent agent text streams must not append into the same text block."""

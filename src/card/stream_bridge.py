@@ -45,6 +45,8 @@ class ACPStreamBridge:
         self._reasoning_blocks_by_source: dict[str, str] = {}
         self._active_text_sources: set[str] = set()
         self._active_reasoning_sources: set[str] = set()
+        self._reasoning_sources_with_content: set[str] = set()
+        self._pending_reasoning_item_breaks: set[str] = set()
 
     def bind(self, dispatchable: Dispatchable) -> None:
         """Rebind to a new dispatchable target; closes open blocks first."""
@@ -57,6 +59,8 @@ class ACPStreamBridge:
             self._reasoning_blocks_by_source.clear()
             self._active_text_sources.clear()
             self._active_reasoning_sources.clear()
+            self._reasoning_sources_with_content.clear()
+            self._pending_reasoning_item_breaks.clear()
 
     def on_event(self, acp_event: ACPEvent) -> None:
         """Process an ACP event and dispatch corresponding CardEvents."""
@@ -71,11 +75,26 @@ class ACPStreamBridge:
                 text_block_id = self._ensure_text_block_locked(source_key)
             elif acp_event.event_type == ACPEventType.TOOL_CALL_START:
                 self._close_text_blocks_locked()
+                if source_key in self._reasoning_sources_with_content:
+                    self._pending_reasoning_item_breaks.add(source_key)
 
             # Override block_id in the converted CardEvent to match our per-turn ID
             ce = card_event_from_acp(acp_event)
             if acp_event.event_type == ACPEventType.THOUGHT_CHUNK and ce.payload.get("block_id"):
-                ce = CardEvent(type=ce.type, payload={**ce.payload, "block_id": reasoning_block_id})
+                reasoning_text = ce.payload.get("text", "")
+                if source_key in self._pending_reasoning_item_breaks:
+                    if (
+                        source_key in self._reasoning_sources_with_content
+                        and not reasoning_text.startswith("\n")
+                    ):
+                        reasoning_text = "\n" + reasoning_text
+                    self._pending_reasoning_item_breaks.discard(source_key)
+                ce = CardEvent(
+                    type=ce.type,
+                    payload={**ce.payload, "block_id": reasoning_block_id, "text": reasoning_text},
+                )
+                if reasoning_text.strip():
+                    self._reasoning_sources_with_content.add(source_key)
             elif acp_event.event_type == ACPEventType.TEXT_CHUNK and ce.payload.get("block_id"):
                 ce = CardEvent(type=ce.type, payload={**ce.payload, "block_id": text_block_id})
             self._dispatchable.dispatch(ce)
@@ -92,6 +111,8 @@ class ACPStreamBridge:
         for source_key in list(self._active_reasoning_sources):
             block_id = self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
             self._dispatchable.dispatch(CardEvent.reasoning_done(block_id))
+            if source_key in self._reasoning_sources_with_content:
+                self._pending_reasoning_item_breaks.add(source_key)
         self._active_reasoning_sources.clear()
         self._reasoning_active = False
         self._close_text_blocks_locked()

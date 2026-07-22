@@ -865,7 +865,7 @@ class TestMultipleBlockTypes:
         assert len(panels) == 1
         body = panels[0]["elements"][0]["content"]
         assert len(body) == 222
-        assert body == ("a" * 221) + "…"
+        assert body == "- " + ("a" * 219) + "…"
 
     def test_reasoning_blocks_paginate_under_feishu_node_limit(self):
         """Reasoning node estimates should keep rendered pages below the hard Feishu cap."""

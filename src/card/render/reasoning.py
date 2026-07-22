@@ -8,6 +8,7 @@ from src.card.themes import PANEL_STYLES
 from src.card.ui_text import UI_TEXT
 
 REASONING_COMPACT_CHARS = 222
+_MARKDOWN_LIST_PREFIXES = ("- ", "* ", "+ ")
 
 
 def truncate_reasoning_for_compact(content: str, *, max_chars: int = REASONING_COMPACT_CHARS) -> str:
@@ -20,6 +21,17 @@ def truncate_reasoning_for_compact(content: str, *, max_chars: int = REASONING_C
     if max_chars == 1:
         return "…"
     return content[: max_chars - 1] + "…"
+
+
+def _format_reasoning_as_list(content: str) -> str:
+    """Render non-empty process-summary lines as compact Markdown list items."""
+    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(
+        line if line.startswith(_MARKDOWN_LIST_PREFIXES) else f"- {line}"
+        for line in lines
+    )
 
 
 def render_reasoning_panel(
@@ -55,7 +67,9 @@ def render_reasoning_panel(
         char_count = block.char_count or len(original_content)
         title_text = UI_TEXT["reasoning_panel_done"].format(char_count=char_count)
 
-    content = truncate_reasoning_for_compact(raw_content) if compact else raw_content
+    content = _format_reasoning_as_list(raw_content)
+    if compact:
+        content = truncate_reasoning_for_compact(content)
     elements = [
         {
             "tag": "markdown",

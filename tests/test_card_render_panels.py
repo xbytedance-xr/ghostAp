@@ -164,7 +164,20 @@ class TestReasoningPanel:
         title = result["header"]["title"]["content"]
         assert "1500" in title
         assert "过程摘要" in title
-        assert result["elements"][0]["content"] == "full thought"
+        assert result["elements"][0]["content"] == "- full thought"
+
+    def test_reasoning_items_render_as_markdown_list(self):
+        """Distinct process-summary segments render like tool activity details."""
+        block = ContentBlock(
+            kind="reasoning",
+            block_id="r1",
+            status="completed",
+            content="先检查配置。\n再运行定向测试。",
+        )
+
+        result = render_reasoning_panel(block)
+
+        assert result["elements"][0]["content"] == "- 先检查配置。\n- 再运行定向测试。"
 
     def test_reasoning_done_full_mode_does_not_truncate(self):
         """Full mode keeps the complete reasoning text."""
@@ -173,7 +186,7 @@ class TestReasoningPanel:
                            content=long_content, char_count=1000)
         budget = RenderBudget(reasoning_tail_chars=500)
         result = render_reasoning_panel(block, budget=budget)
-        assert result["elements"][0]["content"] == long_content
+        assert result["elements"][0]["content"] == f"- {long_content}"
 
     def test_reasoning_compact_truncates_to_222_chars(self):
         """Compact mode keeps a bounded preview of the reasoning text."""
@@ -183,7 +196,7 @@ class TestReasoningPanel:
         result = render_reasoning_panel(block, compact=True)
         body = result["elements"][0]["content"]
         assert len(body) == 222
-        assert body == ("a" * 221) + "…"
+        assert body == "- " + ("a" * 219) + "…"
 
     def test_reasoning_content_override(self):
         """content_override replaces block.content for per-atom correctness."""

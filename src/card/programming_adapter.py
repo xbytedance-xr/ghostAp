@@ -109,6 +109,8 @@ class ProgrammingCardSession:
         self._reasoning_blocks_by_source: dict[str, str] = {}
         self._active_text_sources: set[str] = set()
         self._active_reasoning_sources: set[str] = set()
+        self._reasoning_sources_with_content: set[str] = set()
+        self._pending_reasoning_item_breaks: set[str] = set()
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
         # Text batching state
         self._pending_text = ""
@@ -194,12 +196,19 @@ class ProgrammingCardSession:
             self._flush_now()
             source_key = self._source_key(acp_event)
             block_id = self._ensure_reasoning_block(source_key)
+            reasoning_text = card_event.payload.get("text", "")
+            if source_key in self._pending_reasoning_item_breaks:
+                if source_key in self._reasoning_sources_with_content and not reasoning_text.startswith("\n"):
+                    reasoning_text = "\n" + reasoning_text
+                self._pending_reasoning_item_breaks.discard(source_key)
             # Override the block_id in the delta to match the current reasoning block
             card_event = CardEvent(
                 type=card_event.type,
-                payload={**card_event.payload, "block_id": block_id},
+                payload={**card_event.payload, "block_id": block_id, "text": reasoning_text},
             )
             self._rotator.dispatch(card_event)
+            if reasoning_text.strip():
+                self._reasoning_sources_with_content.add(source_key)
             return
 
         # Structural event: flush pending text first
@@ -212,6 +221,9 @@ class ProgrammingCardSession:
             self._last_tool_boundary_seq += 1
             if self._text_active:
                 self._close_text_blocks()
+            source_key = self._source_key(acp_event)
+            if source_key in self._reasoning_sources_with_content:
+                self._pending_reasoning_item_breaks.add(source_key)
 
         # Text resumed after tool
         if card_event.type == CardEventType.TEXT_STARTED:
@@ -410,6 +422,8 @@ class ProgrammingCardSession:
         for source_key in list(self._active_reasoning_sources):
             block_id = self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
             self._rotator.dispatch(CardEvent.reasoning_done(block_id))
+            if source_key in self._reasoning_sources_with_content:
+                self._pending_reasoning_item_breaks.add(source_key)
         self._active_reasoning_sources.clear()
         self._reasoning_active = False
 

@@ -374,7 +374,7 @@ class TestProgrammingCardSession:
         reasoning_blocks = [b for b in pcs.session.state.blocks if b.kind == "reasoning"]
         assert len(reasoning_blocks) == 1
         assert reasoning_blocks[0].block_id == "_active_reasoning"
-        assert reasoning_blocks[0].content == "需要先读文件。再检查测试。"
+        assert reasoning_blocks[0].content == "需要先读文件。\n再检查测试。"
         assert reasoning_blocks[0].status == "active"
 
         pcs.finish()
@@ -395,6 +395,12 @@ class TestProgrammingCardSession:
         ]
         titles = [panel["header"]["title"]["content"] for panel in panels]
         assert sum("过程摘要" in title for title in titles) == 1
+        reasoning_panel = next(
+            panel for panel in panels if "过程摘要" in panel["header"]["title"]["content"]
+        )
+        assert reasoning_panel["elements"][0]["content"] == (
+            "- 需要先读文件。\n- 再检查测试。"
+        )
         activity_titles = [title for title in titles if "过程摘要" not in title]
         assert len(activity_titles) == 1
         assert "2" in activity_titles[0]
