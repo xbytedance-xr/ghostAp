@@ -12,6 +12,7 @@ from .reducers._shared import build_header
 from .reducers.approval import reduce_approval
 from .reducers.criteria import reduce_criteria
 from .reducers.cycle import reduce_cycle
+from .reducers.image import reduce_image
 from .reducers.lifecycle import reduce_lifecycle
 from .reducers.phase import reduce_phase
 from .reducers.plan import reduce_plan
@@ -143,6 +144,9 @@ _REDUCER_DISPATCH: dict[CardEventType, Callable[[CardState, CardEvent], CardStat
     CardEventType.TOOL_DELTA: reduce_tool,
     CardEventType.TOOL_DONE: reduce_tool,
     CardEventType.TOOL_FAILED: reduce_tool,
+    # Image artifact events
+    CardEventType.IMAGE_ADDED: reduce_image,
+    CardEventType.IMAGE_FAILED: reduce_image,
     # Reasoning events
     CardEventType.REASONING_STARTED: reduce_reasoning,
     CardEventType.REASONING_DELTA: reduce_reasoning,
@@ -203,6 +207,8 @@ _STRUCTURAL_EVENTS = frozenset({
     CardEventType.TOOL_STARTED,
     CardEventType.TOOL_DONE,
     CardEventType.TOOL_FAILED,
+    CardEventType.IMAGE_ADDED,
+    CardEventType.IMAGE_FAILED,
     CardEventType.REASONING_STARTED,
     CardEventType.REASONING_DONE,
     CardEventType.PLAN_UPDATED,

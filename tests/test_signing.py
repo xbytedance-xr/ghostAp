@@ -28,6 +28,23 @@ from src.utils.signing import (
 _TEST_KEY = "test_secret_signing_key"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_nonce_store(tmp_path, monkeypatch):
+    """Keep persistent anti-replay state isolated for every signing test."""
+    import src.utils.signing as signing
+
+    store_path = tmp_path / "used-command-nonces.json"
+    monkeypatch.setattr(
+        signing,
+        "_nonce_store_path",
+        lambda: store_path,
+        raising=False,
+    )
+    signing._USED_NONCES.clear()
+    yield
+    signing._USED_NONCES.clear()
+
+
 # ---------------------------------------------------------------------------
 # _get_signing_key
 # ---------------------------------------------------------------------------
@@ -174,6 +191,49 @@ class TestVerifyCommandSigV2:
             assert result2 is VerifyResult.NONCE_REUSED
             assert bool(result2) is False
 
+    def test_nonce_replay_rejected_after_process_memory_is_reset(self):
+        """A service restart must not make a consumed action reusable."""
+        import src.utils.signing as _mod
+
+        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
+            payload = sign_command("./restart.sh rr", "chat_123")
+            assert verify_command_sig(
+                "./restart.sh rr",
+                payload,
+                chat_id="chat_123",
+            ) is VerifyResult.OK
+
+            # Simulate a fresh process: the in-memory acceleration cache is gone,
+            # while the durable nonce database remains.
+            _mod._USED_NONCES.clear()
+
+            assert verify_command_sig(
+                "./restart.sh rr",
+                payload,
+                chat_id="chat_123",
+            ) is VerifyResult.NONCE_REUSED
+
+    def test_nonce_store_failure_rejects_otherwise_valid_action(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Anti-replay persistence is fail-closed, never best-effort."""
+        import src.utils.signing as _mod
+
+        invalid_store = tmp_path / "store-is-a-directory"
+        invalid_store.mkdir()
+        monkeypatch.setattr(_mod, "_nonce_store_path", lambda: invalid_store)
+        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
+            payload = sign_command("./restart.sh rr", "chat_123")
+            result = verify_command_sig(
+                "./restart.sh rr",
+                payload,
+                chat_id="chat_123",
+            )
+
+        assert result is VerifyResult.MISMATCH
+
     def test_chat_id_mismatch_rejected(self):
         with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
             payload = sign_command("/deploy", "chat_A")
@@ -225,12 +285,12 @@ class TestVerifyCommandSigV1Compat:
             assert result is VerifyResult.OK
             assert bool(result) is True
 
-    def test_v1_sig_accepted_with_chat_id(self):
-        """Old format accepted even when chat_id is provided (it's not v2)."""
+    def test_v1_sig_rejected_when_callback_has_chat_id(self):
+        """Unbound legacy actions must not survive into real chat callbacks."""
         with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
             sig = _compute_command_sig("cmd")
             result = verify_command_sig("cmd", sig, chat_id="any_chat")
-            assert result is VerifyResult.OK
+            assert result is VerifyResult.MISMATCH
 
     def test_v1_wrong_sig_rejected(self):
         with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
@@ -345,18 +405,17 @@ class TestRecordNonce:
         _record_nonce("reused_nonce")
         assert _record_nonce("reused_nonce") is True
 
-    def test_evicts_oldest_when_full(self):
+    def test_fails_closed_instead_of_evicting_live_nonces(self, monkeypatch):
         import src.utils.signing as _mod
         _mod._USED_NONCES.clear()
-        # Fill to capacity
-        for i in range(_mod._MAX_NONCES):
+        monkeypatch.setattr(_mod, "_MAX_NONCES", 3)
+        for i in range(3):
             _record_nonce(f"nonce_{i}")
-        assert len(_mod._USED_NONCES) == _mod._MAX_NONCES
-        # Add one more — oldest should be evicted
-        _record_nonce("new_nonce")
-        assert len(_mod._USED_NONCES) == _mod._MAX_NONCES
-        assert "nonce_0" not in _mod._USED_NONCES
-        assert "new_nonce" in _mod._USED_NONCES
+        with pytest.raises(RuntimeError, match="capacity exhausted"):
+            _record_nonce("new_nonce")
+        assert len(_mod._USED_NONCES) == 3
+        assert "nonce_0" in _mod._USED_NONCES
+        assert "new_nonce" not in _mod._USED_NONCES
 
 
 # ---------------------------------------------------------------------------

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import threading
 import time
 import weakref
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -285,6 +288,30 @@ class TestAgentTaskRouting:
             ),
         )
 
+    def test_execute_failure_output_with_subagent_source_marker_stays_ordinary_tool(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        orch, registry, sessions = _make_orchestrator()
+        bridge = FakeStreamBridge()
+        event = ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="call_zXAT0JlJc0dqRewiUJK8nHYL",
+                title="exec",
+                kind="execute",
+                status="failed",
+                content='assert "子代理：" not in ordinary_output',
+            ),
+        )
+
+        routed = orch.route_or_fallback(event, bridge)
+
+        assert routed is False
+        assert bridge.events == [event]
+        assert registry.count == 0
+        assert orch.active_session_count == 0
+        assert sessions == {}
+
     def test_agent_tool_call_gets_independent_task_card_and_terminal_result(self):
         """Deep-style agent tool calls route to their own session, not only the parent task card."""
         from src.acp.models import ACPEventType
@@ -340,6 +367,119 @@ class TestAgentTaskRouting:
         assert not bridge.events
 
         assert not sessions["t1"].events_of_type(CardEventType.TOOL_MODEL_CHANGED)
+
+    def test_agent_image_routes_to_its_bound_child_bridge(self):
+        from src.acp.models import (
+            ACPEvent,
+            ACPEventType,
+            ACPImageInfo,
+        )
+
+        sessions: dict[str, FakeSession] = {}
+        bridges: dict[str, FakeStreamBridge] = {}
+
+        def create_session(task_id: str):
+            session = FakeSession(session_id=f"session_{task_id}")
+            sessions[task_id] = session
+            return session
+
+        def create_bridge(dispatchable):
+            bridge = FakeStreamBridge()
+            bridges[dispatchable.session_id] = bridge
+            return bridge
+
+        orch = TaskOrchestrator(
+            chat_id="chat-agent-image",
+            session_creator=create_session,
+            registry=TaskRegistry(),
+            bridge_factory=create_bridge,
+        )
+        orch.on_plan_received(
+            [
+                {"task_id": "t1", "name": "Main Task"},
+                {"task_id": "t2", "name": "Second Task"},
+            ]
+        )
+        orch.resolver.mark_active("t1")
+        fallback = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="agent-image",
+                content="生成截图\n子代理：Explore",
+            ),
+            fallback,
+        )
+        image_event = ACPEvent(
+            event_type=ACPEventType.IMAGE_CHUNK,
+            image=ACPImageInfo(
+                image_id="sha256:agent-image",
+                mime_type="image/png",
+                data="aW1hZ2U=",
+                name="agent.png",
+            ),
+            source_id="agent-image",
+        )
+
+        orch.route_acp_event(image_event, fallback)
+
+        assert bridges["session_agent-image"].events == [image_event]
+        assert image_event not in bridges["session_t1"].events
+        assert fallback.events == []
+
+    def test_late_agent_image_falls_back_with_task_attribution(self):
+        from src.acp.models import (
+            ACPEvent,
+            ACPEventType,
+            ACPImageInfo,
+        )
+
+        orch, registry, _ = _make_orchestrator()
+        orch.on_plan_received(
+            [
+                {"task_id": "t1", "name": "Main Task"},
+                {"task_id": "t2", "name": "Second Task"},
+            ]
+        )
+        fallback = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="late-agent-image",
+                content="生成截图\n子代理：Explore",
+            ),
+            fallback,
+        )
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_DONE,
+                tool_id="late-agent-image",
+                title="shell",
+                status="completed",
+                content="done",
+            ),
+            fallback,
+        )
+        task = registry.get("late-agent-image")
+        assert task is not None
+
+        orch.route_acp_event(
+            ACPEvent(
+                event_type=ACPEventType.IMAGE_CHUNK,
+                image=ACPImageInfo(
+                    image_id="sha256:late-agent-image",
+                    mime_type="image/png",
+                    data="aW1hZ2U=",
+                    name="late.png",
+                ),
+                source_id="late-agent-image",
+            ),
+            fallback,
+        )
+
+        assert len(fallback.events) == 1
+        assert fallback.events[0].image is not None
+        assert task.name in fallback.events[0].image.name
 
     def test_task_tool_call_gets_independent_task_card(self):
         """Coco task tool calls are treated as parallel child-task cards."""
@@ -985,34 +1125,42 @@ class TestReset:
 class TestCloseTimeout:
     """Tests for close() timeout protection."""
 
-    @pytest.mark.slow
-    def test_close_survives_blocking_bridge(self):
-        """close() completes even if bridge.close_open_blocks() hangs."""
-        import time
+    def test_permanently_blocked_bridge_does_not_prevent_process_exit(self):
+        """A timed-out bridge worker must not keep Python alive at shutdown."""
+        script = """
+import threading
 
-        class HangingBridge:
-            def on_event(self, evt): pass
-            def close_open_blocks(self):
-                time.sleep(60)  # hang indefinitely
-            def bind(self, d): pass
+from src.card.orchestrator import TaskOrchestrator
 
-        orch = TaskOrchestrator(
-            chat_id="test",
-            session_creator=lambda tid: FakeSession(tid),
-            bridge_factory=lambda d: HangingBridge(),
+
+class HangingBridge:
+    def close_open_blocks(self):
+        threading.Event().wait()
+
+
+orchestrator = TaskOrchestrator(
+    chat_id="subprocess",
+    session_creator=lambda task_id: None,
+)
+run_with_timeout = orchestrator._run_with_timeout
+orchestrator._run_with_timeout = (
+    lambda fn, *, timeout: run_with_timeout(fn, timeout=0.05)
+)
+orchestrator._close_bridges([HangingBridge()])
+print("closed", flush=True)
+"""
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
         )
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch.on_plan_received([
-            {"task_id": "t1", "name": "A"},
-        ])
 
-        start = time.monotonic()
-        orch.close()
-        elapsed = time.monotonic() - start
-
-        # Should complete within ~5s timeout (one bridge), not 60s
-        assert elapsed < 7.0
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "closed"
 
 
 

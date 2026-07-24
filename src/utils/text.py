@@ -8,11 +8,42 @@
 
 import threading
 import time
+import unicodedata
 
 from src.utils.time_ago import TimeAgoBucket, compute_time_ago_bucket
 
 _TASK_ID_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _TASK_ID_SEQ = 0
+
+
+def sanitize_single_line_label(
+    value: object,
+    *,
+    fallback: str,
+    max_chars: int,
+) -> str:
+    """Return a bounded UTF-8-safe label without layout/control characters."""
+    def _clean(raw: object) -> str:
+        cleaned_chars: list[str] = []
+        for character in str(raw or ""):
+            category = unicodedata.category(character)
+            if category == "Cs":
+                cleaned_chars.append("\ufffd")
+            elif category == "Cc" or character.isspace():
+                cleaned_chars.append(" ")
+            else:
+                cleaned_chars.append(character)
+        return " ".join("".join(cleaned_chars).split())
+
+    cleaned = _clean(value)
+    if not cleaned:
+        cleaned = _clean(fallback)
+    return cleaned[: max(0, int(max_chars))]
+
+
+def utf8_replace_bytes(value: object) -> bytes:
+    """Encode arbitrary text deterministically even when it contains surrogates."""
+    return str(value or "").encode("utf-8", errors="replace")
 
 
 def format_time_ago_from_bucket(bucket: TimeAgoBucket) -> str:

@@ -585,6 +585,63 @@ class TestDeepRendererSingleCard:
             "failed",
         ]
 
+    def test_paused_project_cancels_main_and_only_unfinished_child_card(self):
+        renderer, tracker = self._setup_renderer()
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+        callbacks.on_analyzing_start("pause with mixed child states")
+
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent_done",
+                title="subagent",
+                kind="execute",
+                status="in_progress",
+                content="finished child\n子代理：Explore",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="agent_done",
+                title="subagent",
+                kind="execute",
+                status="completed",
+                content="finished child",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent_active",
+                title="subagent",
+                kind="execute",
+                status="in_progress",
+                content="active child\n子代理：Write",
+            ),
+        ))
+
+        from src.deep_engine.models import DeepProjectStatus
+        callbacks.on_project_done(FakeDeepProject(status=DeepProjectStatus.PAUSED))
+
+        terminal_types = {
+            CardEventType.COMPLETED,
+            CardEventType.FAILED,
+            CardEventType.CANCELLED,
+        }
+
+        def _terminals(session):
+            return [
+                call.args[0].type
+                for call in session.dispatch.call_args_list
+                if call.args
+                and getattr(call.args[0], "type", None) in terminal_types
+            ]
+
+        assert _terminals(tracker.sessions_created[0]) == [CardEventType.CANCELLED]
+        assert _terminals(tracker.sessions_created[1]) == [CardEventType.COMPLETED]
+        assert _terminals(tracker.sessions_created[2]) == [CardEventType.CANCELLED]
+
     def test_agent_tool_call_uses_marked_child_card_and_main_task_summary(self):
         """Subagent details use a child card while main keeps only task progress."""
         renderer, tracker = self._setup_renderer()
@@ -666,6 +723,49 @@ class TestDeepRendererSingleCard:
         assert CardEventType.TOOL_DELTA in child_event_types
         assert CardEventType.TOOL_DONE in child_event_types
         assert CardEventType.COMPLETED in child_event_types
+
+    def test_execute_failure_output_with_subagent_source_marker_does_not_create_child_card(self):
+        renderer, tracker = self._setup_renderer()
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+        callbacks.on_analyzing_start("verify ordinary execute routing")
+        execute_call_id = "call_zXAT0JlJc0dqRewiUJK8nHYL"
+        initial_card_count = tracker.create_card_count
+
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id=execute_call_id,
+                title="exec",
+                kind="execute",
+                status="in_progress",
+                content="uv run python -m pytest tests/test_card_orchestrator.py -q",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id=execute_call_id,
+                title="exec",
+                kind="execute",
+                status="failed",
+                content='assert "子代理：" not in ordinary_output',
+            ),
+        ))
+
+        assert tracker.create_card_count == initial_card_count
+        main_session = tracker.sessions_created[0]
+        task_updates = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args
+            and hasattr(call.args[0], "type")
+            and call.args[0].type == CardEventType.TASK_LIST_UPDATED
+        ]
+        assert all(
+            task.get("task_id") != execute_call_id
+            for event in task_updates
+            for task in event.payload["tasks"]
+        )
 
     def test_parallel_subagents_create_independent_cards_without_reordering_main(self):
         """Each parallel subagent gets its own card; main receives summary events only."""

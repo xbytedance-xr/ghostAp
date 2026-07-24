@@ -6,9 +6,10 @@ repo lock probe-acquire-then-release, and TOCTOU race documentation.
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal mock client + registry bootstrap
@@ -48,12 +49,26 @@ def _bootstrap(client):
     return client._handlers.get("retry_command")
 
 
-def _compute_hmac_sig(cmd: str) -> str:
-    """Compute HMAC-SHA256 using _SIGNING_KEY — mirrors production logic."""
-    import hmac
-    return hmac.new(
-        _SIGNING_KEY.encode("utf-8"), cmd.encode("utf-8"), hashlib.sha256,
-    ).hexdigest()
+def _sign_command(cmd: str, chat_id: str) -> str:
+    """Create the production v2 signature bound to the action's chat."""
+    from src.utils.signing import sign_command
+
+    return sign_command(cmd, chat_id)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_nonce_store(tmp_path, monkeypatch):
+    """Keep durable single-use action state isolated between tests."""
+    from src.utils import signing
+
+    signing._USED_NONCES.clear()
+    monkeypatch.setattr(
+        signing,
+        "_nonce_store_path",
+        lambda: tmp_path / "used-command-nonces.json",
+    )
+    yield
+    signing._USED_NONCES.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +137,7 @@ class TestRetryCommandValidSig:
         handler = _bootstrap(client)
 
         cmd = "/deep run"
-        sig = _compute_hmac_sig(cmd)
+        sig = _sign_command(cmd, "chat_4")
         handler("mid_4", "chat_4", None, {
             "command_text": cmd,
             "command_sig": sig,
@@ -164,7 +179,7 @@ class TestRetryCommandRepoLockProbe:
         handler = _bootstrap(client)
 
         cmd = "/deep run"
-        sig = _compute_hmac_sig(cmd)
+        sig = _sign_command(cmd, "chat_5")
         handler("mid_5", "chat_5", "proj_1", {
             "command_text": cmd,
             "command_sig": sig,
@@ -204,7 +219,7 @@ class TestRetryCommandRepoLockProbe:
         handler = _bootstrap(client)
 
         cmd = "/deep fix"
-        sig = _compute_hmac_sig(cmd)
+        sig = _sign_command(cmd, "chat_6")
         handler("mid_6", "chat_6", "proj_1", {
             "command_text": cmd,
             "command_sig": sig,
@@ -266,7 +281,7 @@ class TestRetryCommandTOCTOURace:
         handler = _bootstrap(client)
 
         cmd = "/deep run"
-        sig = _compute_hmac_sig(cmd)
+        sig = _sign_command(cmd, "chat_7")
 
         racer_thread = threading.Thread(target=racer, daemon=True)
         racer_thread.start()

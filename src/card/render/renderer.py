@@ -28,11 +28,12 @@ from src.card.text_stream import soft_join_text_fragments
 from src.card.themes import PANEL_STYLES
 from src.card.types import ActiveElement, RenderedCard
 from src.card.ui_text import UI_TEXT
+from src.utils.text import utf8_replace_bytes
 
 logger = logging.getLogger(__name__)
 
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
-_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel", "review_role", "spec_plan", "spec_task"})
+_BODY_ATOM_KINDS = frozenset({"text", "image", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel", "review_role", "spec_plan", "spec_task", "execution_current", "execution_history"})
 _MIN_STREAMING_TEXT_CHARS = 2
 _FENCE_LINE_RE = re.compile(r"^(?P<indent>\s{0,3})(?P<escaped>\\?)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _FENCE_LANGUAGE_ALIASES = {
@@ -128,7 +129,13 @@ def render_card(
     }
 
     # 1. Flatten blocks to atoms and build SectionLayout skeleton.
-    atoms = flatten_to_atoms(state.blocks, budget)
+    is_programming_card = state.metadata.engine_type is None
+    atoms = flatten_to_atoms(
+        state.blocks,
+        budget,
+        unified_execution=is_programming_card,
+        terminal=state.terminal != "running",
+    )
     if state.metadata and state.metadata.compact:
         atoms = _compact_reasoning_atoms(atoms)
     subagent_atom = build_subagent_dispatch_atom(list(state.metadata.subagents)) if state.metadata.subagents else None
@@ -241,7 +248,7 @@ def render_card(
                             page_sig_parts.append(_content_signature(item.get("content", "")))
                             break
         page_signature = hashlib.md5(
-            "|".join(page_sig_parts).encode("utf-8")
+            utf8_replace_bytes("|".join(page_sig_parts))
         ).hexdigest()
 
         results.append(
@@ -265,13 +272,14 @@ def render_card(
 @functools.lru_cache(maxsize=64)
 def _compute_sig_cached(sv: int, parts_key: str) -> str:
     """Cached MD5 computation keyed on (structural_version, parts_key)."""
-    return hashlib.md5(parts_key.encode("utf-8")).hexdigest()
+    return hashlib.md5(utf8_replace_bytes(parts_key)).hexdigest()
 
 
 def compute_structure_signature(state: CardState) -> str:
     """Compute MD5 of structural parts of the card.
 
-    Structural = block kinds + statuses + tool names + terminal state + header + buttons.
+    Structural = block kinds + statuses + tool names + image render fields
+    + terminal state + header + buttons.
     Excludes: active text content (streamed via element_content), progress_pct,
     criteria counts, and warning_banner (tracked separately in content_hash).
     This allows the delivery layer to skip full card updates when only text changed.
@@ -283,6 +291,9 @@ def compute_structure_signature(state: CardState) -> str:
         parts.append(f"{block.kind}:{block.block_id}:{block.status}")
         if block.kind == "tool_call":
             parts.append(f"tn:{block.tool_name}")
+        elif block.kind == "image":
+            parts.append(f"image_key:{block.image_key or ''}")
+            parts.append(f"image_alt:{block.alt}")
     parts.append(f"terminal:{state.terminal}")
     parts.append(f"header:{state.header.title}:{state.header.template}")
     if state.header.subtitle is not None:
@@ -342,7 +353,7 @@ def compute_content_hash(state: CardState) -> str:
     if not parts:
         return ""
     raw = "|".join(parts)
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+    return hashlib.md5(utf8_replace_bytes(raw)).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +441,10 @@ def _render_atom_task_list(atom: RenderAtom, state: CardState, budget: RenderBud
     block = block_index.get(atom.block_id)
     if block is None:
         return {"tag": "markdown", "content": atom.content}
-    return render_task_list_panel(block)
+    return render_task_list_panel(
+        block,
+        compact=bool(state.metadata.is_subagent),
+    )
 
 
 def _render_atom_review_role(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
@@ -463,6 +477,23 @@ def _render_atom_activity_digest(atom: RenderAtom, state: CardState, budget: Ren
     return {"tag": "markdown", "content": atom.content, "text_size": "normal"}
 
 
+def _render_atom_execution_flow(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    """Render a pre-built current-action row or execution-history panel."""
+    if atom.elements:
+        return atom.elements[0]
+    return {"tag": "markdown", "content": atom.content, "text_size": "normal"}
+
+
+def _render_atom_image(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    if atom.elements:
+        return atom.elements[0]
+    return {
+        "tag": "markdown",
+        "content": "🖼️ 图片产物暂时无法展示；文本结果与本地文件不受影响。",
+        "text_size": "notation",
+    }
+
+
 # Atom renderer registry: maps atom.kind → renderer function.
 # To add a new atom kind, define a function with the standard signature and register it here.
 _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict], dict | None]] = {
@@ -482,6 +513,9 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "review_role": _render_atom_review_role,
     "spec_plan": _render_atom_spec_plan,
     "spec_task": _render_atom_spec_task,
+    "execution_current": _render_atom_execution_flow,
+    "execution_history": _render_atom_execution_flow,
+    "image": _render_atom_image,
 }
 
 _atom_kind_literals = set(_get_args(AtomKind))
@@ -508,7 +542,11 @@ def _render_atoms_to_elements(
         if renderer is not None:
             el = renderer(atom, state, budget, block_index)
             if el is not None:
-                if bridge_phrase and not bridge_injected and atom.kind in {"text", "reasoning"}:
+                if bridge_phrase and not bridge_injected and atom.kind in {
+                    "text",
+                    "reasoning",
+                    "execution_current",
+                }:
                     if _prepend_bridge_phrase(el, bridge_phrase):
                         bridge_injected = True
                 elements.append(el)
@@ -665,6 +703,28 @@ def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionL
             status_atoms.append(atom)
         else:
             body_atoms.append(atom)
+
+    if state.metadata.engine_type is None:
+        execution_atoms = [
+            atom
+            for atom in body_atoms
+            if atom.kind in {"execution_current", "execution_history"}
+        ]
+        other_body_atoms = [
+            atom
+            for atom in body_atoms
+            if atom.kind not in {"execution_current", "execution_history"}
+        ]
+        if state.terminal == "running":
+            body_atoms = [*execution_atoms, *other_body_atoms]
+        else:
+            answer_atoms = [
+                atom for atom in other_body_atoms if atom.kind in {"text", "image"}
+            ]
+            remaining_atoms = [
+                atom for atom in other_body_atoms if atom.kind not in {"text", "image"}
+            ]
+            body_atoms = [*answer_atoms, *remaining_atoms, *execution_atoms]
 
     return SectionLayout(
         sticky_head=sticky_head,
@@ -854,7 +914,7 @@ def _strip_streaming_element_ids(nodes: list[dict]) -> None:
 
 
 def _content_signature(content: object) -> str:
-    return hashlib.md5(str(content or "").encode("utf-8")).hexdigest()
+    return hashlib.md5(utf8_replace_bytes(content)).hexdigest()
 
 
 def _assemble_card_json(

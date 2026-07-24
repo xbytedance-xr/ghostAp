@@ -6,7 +6,13 @@ from src.card.render.footer import (
     render_now_tool_hint,
     render_subagent_badge,
 )
-from src.card.state.models import CardMetadata, CardState, ContentBlock, FooterState
+from src.card.state.models import (
+    CardMetadata,
+    CardState,
+    ContentBlock,
+    EngineExtState,
+    FooterState,
+)
 
 
 def _tool(name, status="active", tool_input=None):
@@ -108,28 +114,185 @@ def test_frozen_footer_no_continuation_when_seq_zero():
     assert not any("本卡已停止更新" in el.get("content", "") for el in elements)
 
 
-def test_footer_renders_subagent_badge_when_enabled():
+def test_child_footer_keeps_one_status_and_metadata_line_without_duplicates(monkeypatch):
+    monkeypatch.setattr("src.card.render.footer.time.monotonic", lambda: 146.0)
     state = CardState(
-        footer=FooterState(status="thinking", status_text="执行中"),
+        blocks=(_tool("Bash", tool_input='{"command": "uv run pytest"}'),),
+        footer=FooterState(
+            status="tool_running",
+            status_text="🔄 执行中",
+            progress="工具调用 4/4",
+            progress_started_at=100.0,
+        ),
         metadata=CardMetadata(
-            tool_name="Aiden",
-            model_name="claude-haiku-4-5",
+            working_dir="/workspace/ghostAp",
+            tool_name="codex",
+            model_name="gpt-5",
             is_subagent=True,
-            parent_card_seq="5",
+            parent_card_seq="1",
         ),
     )
 
     elements = render_footer(state)
+    content_lines = [
+        element.get("content", "")
+        for element in elements
+        if element.get("tag") == "markdown"
+    ]
 
-    assert any("🧬 sub · model: claude-haiku-4-5 · tool: Aiden · from #5" in el.get("content", "") for el in elements)
+    assert "🔄 执行中" in content_lines
+    assert [
+        line for line in content_lines if "codex" in line or "gpt-5" in line
+    ] == ["🔧 codex · 🧩 gpt-5 · ⏱ 46 秒"]
+    assert not any("📂" in line for line in content_lines)
+    assert not any("⚙" in line for line in content_lines)
+    assert not any("🧬" in line for line in content_lines)
+    assert not any("sub" in line.lower() for line in content_lines)
+    assert not any("model:" in line or "tool:" in line or "from #" in line for line in content_lines)
+
+
+def test_running_child_footer_uses_session_start_when_progress_never_started(
+    monkeypatch,
+):
+    monkeypatch.setattr("src.card.render.footer.time.monotonic", lambda: 146.0)
+    state = CardState(
+        footer=FooterState(
+            status="thinking",
+            status_text="🔄 执行中",
+        ),
+        metadata=CardMetadata(
+            tool_name="codex",
+            model_name="gpt-5",
+            is_subagent=True,
+            session_started_at=100.0,
+        ),
+    )
+
+    content = "\n".join(
+        element.get("content", "")
+        for element in render_footer(state)
+    )
+
+    assert "🔧 codex · 🧩 gpt-5 · ⏱ 46 秒" in content
+
+
+@pytest.mark.parametrize(
+    "unsafe_tool",
+    [
+        "call_internal_123",
+        '\\" not in ordinary_output\\",\\n',
+        'Explore raw JSON: {"model":"x"}',
+    ],
+)
+def test_child_footer_omits_unsafe_tool_metadata(unsafe_tool):
+    state = CardState(
+        footer=FooterState(status="thinking", status_text="执行中"),
+        metadata=CardMetadata(
+            tool_name=unsafe_tool,
+            model_name="gpt-5",
+            is_subagent=True,
+        ),
+    )
+
+    content = "\n".join(
+        element.get("content", "")
+        for element in render_footer(state)
+    )
+
+    assert unsafe_tool not in content
+    assert "🔧" not in content
+    assert "🧩 gpt-5" in content
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected_status"),
+    [
+        ("completed", "✅ 已完成"),
+        ("failed", "❌ 执行失败"),
+    ],
+)
+def test_child_terminal_footer_projects_task_status(
+    terminal,
+    expected_status,
+):
+    state = CardState(
+        terminal=terminal,
+        footer=FooterState(
+            status_text="发送 /deep 启动新任务",
+            duration_seconds=18,
+        ),
+        metadata=CardMetadata(
+            tool_name="codex",
+            model_name="gpt-5",
+            is_subagent=True,
+        ),
+    )
+
+    content_lines = [
+        element.get("content", "")
+        for element in render_footer(state)
+        if element.get("tag") == "markdown"
+    ]
+
+    assert content_lines[0] == expected_status
+    assert not any("发送 /deep" in line for line in content_lines)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        CardState(
+            terminal="blocked",
+            footer=FooterState(duration_seconds=18),
+            metadata=CardMetadata(
+                tool_name="codex",
+                model_name="gpt-5",
+                is_subagent=True,
+            ),
+            engine_ext=EngineExtState(blocked_reason="等待依赖"),
+        ),
+        CardState(
+            terminal="archived",
+            footer=FooterState(duration_seconds=18),
+            metadata=CardMetadata(
+                tool_name="codex",
+                model_name="gpt-5",
+                is_subagent=True,
+                frozen=True,
+                continuation_seq=2,
+            ),
+        ),
+        CardState(
+            footer=FooterState(
+                status="thinking",
+                status_text="执行中",
+            ),
+            metadata=CardMetadata(
+                tool_name="codex",
+                model_name="gpt-5",
+                is_subagent=True,
+                idle_timeout_seconds=60,
+            ),
+        ),
+    ],
+    ids=["blocked", "archived", "idle-timeout"],
+)
+def test_child_footer_has_at_most_two_semantic_lines(state):
+    content_lines = [
+        element.get("content", "")
+        for element in render_footer(state)
+        if element.get("tag") == "markdown"
+    ]
+
+    assert len(content_lines) <= 2
 
 
 def test_subagent_badge_helper_is_blank_for_main_card():
     assert render_subagent_badge(CardMetadata(tool_name="Codex")) == ""
 
 
-def test_build_footer_atoms_includes_tool_hint_and_subagent_badge():
-    """build_footer_atoms should include both tool hint and subagent badge (AC-16)."""
+def test_build_footer_atoms_omit_child_tool_hint_and_subagent_badge():
+    """Child-only footer appendices must not reintroduce duplicate metadata."""
     state = CardState(
         blocks=(_tool("Edit", tool_input='{"path": "src/card/render/footer.py"}'),),
         footer=FooterState(status="tool_running", status_text="执行中"),
@@ -143,8 +306,22 @@ def test_build_footer_atoms_includes_tool_hint_and_subagent_badge():
 
     atoms = build_footer_atoms(state)
 
-    assert any("⚙ **Edit**" in atom.content for atom in atoms)
-    assert any("🧬 sub" in atom.content for atom in atoms)
+    assert not any("⚙ **Edit**" in atom.content for atom in atoms)
+    assert not any("🧬 sub" in atom.content for atom in atoms)
+
+
+def test_build_footer_atoms_omit_child_frozen_continuation():
+    state = CardState(
+        metadata=CardMetadata(
+            is_subagent=True,
+            frozen=True,
+            continuation_seq=2,
+        ),
+    )
+
+    atoms = build_footer_atoms(state)
+
+    assert not any("本卡已停止更新" in atom.content for atom in atoms)
 
 
 def test_build_footer_atoms_frozen_continuation():

@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -7,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from lark_oapi.api.im.v1 import (
     CreateFileRequest,
     CreateFileRequestBody,
+    CreateImageRequest,
+    CreateImageRequestBody,
     CreateMessageReactionRequest,
     CreateMessageReactionRequestBody,
     CreateMessageRequest,
@@ -225,6 +228,46 @@ class FeishuIMClient:
         data = getattr(response, "data", None)
         file_key = getattr(data, "file_key", None)
         return str(file_key) if file_key else None
+
+    def upload_image_bytes(
+        self,
+        image_bytes: bytes,
+        *,
+        image_type: str = "message",
+        max_retries: Optional[int] = None,
+    ) -> Optional[str]:
+        """Upload in-memory image bytes to Feishu IM and return image_key."""
+        if not isinstance(image_bytes, bytes) or not image_bytes:
+            raise ValueError("image_bytes must be non-empty bytes")
+        client = self.api_client_factory()
+
+        def _upload_once():
+            with io.BytesIO(image_bytes) as image_file:
+                request = (
+                    CreateImageRequest.builder()
+                    .request_body(
+                        CreateImageRequestBody.builder()
+                        .image_type(image_type)
+                        .image(image_file)
+                        .build()
+                    )
+                    .build()
+                )
+                return client.im.v1.image.create(request)
+
+        response = self._execute_with_retry(
+            _upload_once,
+            "上传图片",
+            max_retries,
+        )
+
+        if response is None:
+            return None
+        if hasattr(response, "success") and not response.success():
+            return None
+        data = getattr(response, "data", None)
+        image_key = getattr(data, "image_key", None)
+        return str(image_key) if image_key else None
 
     def reply_file(
         self,

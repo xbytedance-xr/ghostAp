@@ -120,9 +120,9 @@ def test_header_v2_includes_subagent_task_context():
 
     result = render_header(state)
 
-    assert result["title"]["content"] == "第 3 轮"
-    assert "子任务 2a: 排查渲染边界" in result["subtitle"]["content"]
-    assert "#3.a" in result["subtitle"]["content"]
+    assert result["title"]["content"] == "🧬 子任务 · 排查渲染边界"
+    assert result["subtitle"]["content"] == "执行中 · 子卡 #3.a · 来自主卡 #3"
+    assert "2a" not in str(result)
     assert result["template"] == "orange"
 
 
@@ -158,9 +158,41 @@ def test_header_v2_subagent_uses_parent_reference_instead_of_path():
 
     result = render_header(state)
 
-    assert "↳ from #5" in result["subtitle"]["content"]
+    assert result["title"]["content"] == "🧬 子任务"
+    assert result["subtitle"]["content"] == "执行中 · 子卡 #5.a · 来自主卡 #5"
     assert "~/p" not in result["subtitle"]["content"]
     assert result["template"] == "orange"
+
+
+@pytest.mark.parametrize(
+    "unsafe_label",
+    [
+        "call_internal_123",
+        '\\" not in ordinary_output\\",\\n',
+        'Explore raw JSON: {"model":"x"}',
+        "子任务",
+        "task",
+        "agent",
+    ],
+)
+def test_header_v2_subtask_rejects_internal_escaped_or_generic_label(unsafe_label):
+    state = CardState(
+        metadata=CardMetadata(
+            unit_kind="subagent",
+            unit_id="different_internal_id",
+            unit_label=unsafe_label,
+            card_sequence="5.a",
+            is_subagent=True,
+            parent_card_seq="5",
+        ),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "🧬 子任务"
+    assert " · " not in result["title"]["content"]
+    if unsafe_label != "子任务":
+        assert unsafe_label not in str(result)
 
 
 def test_header_v2_frozen_shows_archived_state_and_final_elapsed():

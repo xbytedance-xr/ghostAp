@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from src.acp.models import ACPEvent
+    from src.acp.models import ACPEvent, ACPImageInfo
     from src.card.protocols import Dispatchable
 
 
@@ -28,9 +28,17 @@ class ACPStreamBridge:
     cannot interleave state mutations and dispatch calls.
     """
 
-    def __init__(self, dispatchable: Dispatchable) -> None:
+    def __init__(
+        self,
+        dispatchable: Dispatchable,
+        *,
+        image_uploader: Callable[["ACPImageInfo"], str | None] | None = None,
+    ) -> None:
+        from src.card.media_bridge import ACPImagePublisher
+
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._dispatchable: Dispatchable = dispatchable
+        self._image_publisher = ACPImagePublisher(dispatchable, image_uploader)
         self._text_active: bool = False
         self._reasoning_active: bool = False
         # Per-turn counters generate unique block IDs at hard stream
@@ -53,6 +61,7 @@ class ACPStreamBridge:
         with self._lock:
             self._close_open_blocks_locked()
             self._dispatchable = dispatchable
+            self._image_publisher.bind(dispatchable)
             self._text_active = False
             self._reasoning_active = False
             self._text_blocks_by_source.clear()
@@ -68,6 +77,10 @@ class ACPStreamBridge:
         from src.card.events import CardEvent, card_event_from_acp
 
         with self._lock:
+            if acp_event.event_type == ACPEventType.IMAGE_CHUNK:
+                self._close_open_blocks_locked(retire_reasoning=True)
+                self._image_publisher.handle(acp_event)
+                return
             source_key = self._source_key(acp_event)
             if acp_event.event_type == ACPEventType.THOUGHT_CHUNK:
                 reasoning_block_id = self._ensure_reasoning_block_locked(source_key)
@@ -75,8 +88,7 @@ class ACPStreamBridge:
                 text_block_id = self._ensure_text_block_locked(source_key)
             elif acp_event.event_type == ACPEventType.TOOL_CALL_START:
                 self._close_text_blocks_locked()
-                if source_key in self._reasoning_sources_with_content:
-                    self._pending_reasoning_item_breaks.add(source_key)
+                self._retire_reasoning_blocks_locked()
 
             # Override block_id in the converted CardEvent to match our per-turn ID
             ce = card_event_from_acp(acp_event)
@@ -104,21 +116,31 @@ class ACPStreamBridge:
         with self._lock:
             self._close_open_blocks_locked()
 
-    def _close_open_blocks_locked(self) -> None:
+    def _close_open_blocks_locked(
+        self,
+        *,
+        retire_reasoning: bool = False,
+    ) -> None:
         """Internal: close open blocks while holding self._lock."""
-        from src.card.events import CardEvent
-
-        for source_key in list(self._active_reasoning_sources):
-            block_id = self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
-            self._dispatchable.dispatch(CardEvent.reasoning_done(block_id))
-            if source_key in self._reasoning_sources_with_content:
-                self._pending_reasoning_item_breaks.add(source_key)
-        self._active_reasoning_sources.clear()
-        self._reasoning_active = False
+        source_keys = (
+            self._reasoning_blocks_by_source
+            if retire_reasoning
+            else self._active_reasoning_sources
+        )
+        for source_key in list(source_keys):
+            self._close_reasoning_source_locked(
+                source_key,
+                retire=retire_reasoning,
+            )
         self._close_text_blocks_locked()
 
+    def _retire_reasoning_blocks_locked(self) -> None:
+        """Retire every source mapping at a hard execution boundary."""
+        for source_key in list(self._reasoning_blocks_by_source):
+            self._close_reasoning_source_locked(source_key, retire=True)
+
     def _close_text_blocks_locked(self) -> None:
-        """Close answer text at a tool boundary without fragmenting reasoning."""
+        """Close answer text at a hard execution boundary."""
         from src.card.events import CardEvent
 
         for source_key in list(self._active_text_sources):
@@ -126,6 +148,22 @@ class ACPStreamBridge:
             self._dispatchable.dispatch(CardEvent.text_done(block_id))
         self._active_text_sources.clear()
         self._text_active = False
+
+    def _close_reasoning_source_locked(self, source_key: str, *, retire: bool = False) -> None:
+        """Close one source's reasoning block while holding ``self._lock``."""
+        from src.card.events import CardEvent
+
+        block_id = self._reasoning_blocks_by_source.get(source_key)
+        if source_key in self._active_reasoning_sources and block_id:
+            self._dispatchable.dispatch(CardEvent.reasoning_done(block_id))
+            self._active_reasoning_sources.discard(source_key)
+            if source_key in self._reasoning_sources_with_content and not retire:
+                self._pending_reasoning_item_breaks.add(source_key)
+        if retire:
+            self._reasoning_blocks_by_source.pop(source_key, None)
+            self._pending_reasoning_item_breaks.discard(source_key)
+            self._reasoning_sources_with_content.discard(source_key)
+        self._reasoning_active = bool(self._active_reasoning_sources)
 
     def _ensure_text_block_locked(self, source_key: str) -> str:
         """Open the current logical text block if needed."""

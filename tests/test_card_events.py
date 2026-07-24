@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
+from src.acp.models import (
+    ACPEvent,
+    ACPEventType,
+    ACPImageInfo,
+    PlanEntryInfo,
+    PlanInfo,
+    ToolCallInfo,
+)
 from src.card.events import VALIDATE_PAYLOAD, CardEvent, CardEventType
 from src.card.events.worktree import (
     worktree_cleanup,
@@ -23,12 +30,37 @@ class TestValidatePayloadFlag:
 
 class TestCardEventCreation:
     def test_all_event_types_exist(self):
-        assert len(CardEventType) == 52
+        assert len(CardEventType) == 54
 
     def test_started_factory(self):
         e = CardEvent.started()
         assert e.type == CardEventType.STARTED
         assert e.payload == {}
+
+    @pytest.mark.parametrize("factory_name", ["image_added", "image_failed"])
+    def test_image_alt_sanitizes_surrogates_and_control_characters(
+        self,
+        factory_name: str,
+    ):
+        factory = getattr(CardEvent, factory_name)
+        if factory_name == "image_added":
+            event = factory(
+                "sha256:unsafe-name",
+                "img_safe",
+                "screen\udcff\x00\nshot.png",
+            )
+        else:
+            event = factory(
+                "sha256:unsafe-name",
+                "screen\udcff\x00\nshot.png",
+            )
+
+        alt = event.payload["alt"]
+        alt.encode("utf-8")
+        assert "\x00" not in alt
+        assert "\n" not in alt
+        assert "\udcff" not in alt
+        assert alt == "screen� shot.png"
 
     def test_completed_factory(self):
         e = CardEvent.completed()
@@ -159,6 +191,21 @@ class TestFromACP:
         ce = CardEvent.from_acp(acp)
         assert ce.type == CardEventType.REASONING_DELTA
         assert ce.payload["text"] == "hmm"
+
+    def test_image_chunk_without_media_bridge_has_visible_fallback(self):
+        image = ACPImageInfo(
+            image_id="sha256:abc",
+            mime_type="image/png",
+            data="aW1hZ2U=",
+            name="截图",
+        )
+
+        ce = CardEvent.from_acp(
+            ACPEvent(event_type=ACPEventType.IMAGE_CHUNK, image=image)
+        )
+
+        assert ce.type == CardEventType.IMAGE_FAILED
+        assert ce.payload == {"image_id": "sha256:abc", "alt": "截图"}
 
     def test_tool_call_start(self):
         tc = ToolCallInfo(id="tc1", title="bash", kind="execute", status="in_progress", content="ls")

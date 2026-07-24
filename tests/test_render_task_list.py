@@ -109,30 +109,27 @@ class TestRenderTaskListPanel:
         result = render_task_list_panel(block)
         assert result is None
 
-    def test_compact_mode_shows_three_groups(self):
-        """Compact mode keeps v2 sticky task context: active/done/pending groups."""
+    def test_compact_mode_is_collapsed_neutral_summary(self):
+        """Compact child progress stays neutral while the final task is running."""
         tasks = [
             {"task_id": "t1", "name": "探索代码", "status": "completed"},
-            {"task_id": "t2", "name": "修复路由", "status": "in_progress"},
-            {"task_id": "t3", "name": "单元测试", "status": "pending"},
-            {"task_id": "t4", "name": "集成测试", "status": "pending"},
-            {"task_id": "t5", "name": "文档更新", "status": "pending"},
+            {"task_id": "t2", "name": "修复路由", "status": "completed"},
+            {"task_id": "t3", "name": "单元测试", "status": "completed"},
+            {"task_id": "t4", "name": "集成测试", "status": "completed"},
+            {"task_id": "t5", "name": "最终代码审查", "status": "in_progress"},
         ]
-        block = _make_block(tasks, "t2")
+        block = _make_block(tasks, "t5")
 
         result = render_task_list_panel(block, compact=True)
 
         assert result["tag"] == "collapsible_panel"
-        assert result["expanded"] is True
-        content = result["elements"][0]["content"]
-        assert "修复路由" in content
-        assert "探索代码" in content
-        assert "文档更新" in content
-        assert "进行中 (1)" in content
-        assert "已完成 (1)" in content
-        assert "未处理 (3)" in content
+        assert result["expanded"] is False
+        assert result["border"]["color"] == "grey"
         header_content = result["header"]["title"]["content"]
-        assert "1/5" in header_content
+        assert header_content == (
+            "**整体 4/5 · 当前 5/5 最终代码审查**"
+        )
+        assert "✅" not in header_content
 
     def test_compact_mode_keeps_in_progress_when_current_id_missing(self):
         """Compact mode still shows in-progress task if current_task_id is stale."""
@@ -147,6 +144,7 @@ class TestRenderTaskListPanel:
 
         content = result["elements"][0]["content"]
         assert "正在执行" in content
+        assert "**正在执行**" in content
         assert "后续任务" in content
         assert "未处理 (1)" in content
 

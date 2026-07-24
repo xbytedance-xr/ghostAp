@@ -11,13 +11,19 @@ The old HMAC-only format is supported within the compatibility window.
 from __future__ import annotations
 
 import enum
+import fcntl
 import hashlib
 import hmac
+import json
 import logging
+import os
 import secrets
+import tempfile
+import threading
 import time
 from collections import OrderedDict
 from datetime import date as _date
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -26,9 +32,10 @@ logger = logging.getLogger(__name__)
 # when the module is loaded during early bootstrap (e.g. pre-fork workers).
 _PROCESS_START_DATE: Optional[_date] = None
 
-# Anti-replay nonce store (bounded, evicts oldest entries)
+# Same-process nonce cache; durable state is maintained by _record_nonce().
 _USED_NONCES: OrderedDict[str, float] = OrderedDict()
 _MAX_NONCES = 10000
+_NONCE_STORE_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _get_process_start_date() -> _date:
@@ -145,18 +152,134 @@ def _is_v2_sig(sig_payload: str) -> bool:
     return len(parts) == 4 and len(parts[0]) == 64 and parts[1].isdigit()
 
 
-def _record_nonce(nonce: str) -> bool:
+def _nonce_store_path() -> Path:
+    """Return the durable command-action nonce store path."""
+    return Path.home() / ".ghostap" / "used-command-nonces.json"
+
+
+def _record_nonce(nonce: str, expires_at: int | None = None) -> bool:
     """Record a nonce and return True if it was already seen (replay).
 
-    Maintains a bounded OrderedDict of recently seen nonces.
+    A flock-protected JSON file is the authority so a service restart cannot
+    make an old action reusable. The in-memory map is only a fast path.
     """
-    if nonce in _USED_NONCES:
-        return True  # replay detected
-    _USED_NONCES[nonce] = time.time()
-    # Evict oldest entries if over capacity
-    while len(_USED_NONCES) > _MAX_NONCES:
-        _USED_NONCES.popitem(last=False)
-    return False
+    now = int(time.time())
+    expiry = int(expires_at if expires_at is not None else now + 3600)
+    with _NONCE_STORE_LOCK:
+        cached_expiry = _USED_NONCES.get(nonce)
+        if cached_expiry is not None:
+            if cached_expiry >= now:
+                return True
+            _USED_NONCES.pop(nonce, None)
+
+        store_path = _nonce_store_path()
+        store_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_path = Path(f"{store_path}.lock")
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        cloexec = getattr(os, "O_CLOEXEC", 0)
+        lock_fd = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | nofollow | cloexec,
+            0o600,
+        )
+        temp_path: str | None = None
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            records: dict[str, int] = {}
+            try:
+                store_fd = os.open(
+                    store_path,
+                    os.O_RDONLY | nofollow | cloexec,
+                )
+            except FileNotFoundError:
+                store_fd = -1
+            if store_fd >= 0:
+                try:
+                    stat_result = os.fstat(store_fd)
+                    if stat_result.st_size > 2 * 1024 * 1024:
+                        raise RuntimeError("command nonce store is oversized")
+                    payload = bytearray()
+                    while len(payload) <= 2 * 1024 * 1024:
+                        chunk = os.read(store_fd, 64 * 1024)
+                        if not chunk:
+                            break
+                        payload.extend(chunk)
+                    raw_records = json.loads(payload.decode("utf-8")) if payload else {}
+                    if not isinstance(raw_records, dict):
+                        raise RuntimeError("command nonce store has invalid shape")
+                    for stored_nonce, stored_expiry in raw_records.items():
+                        if (
+                            not isinstance(stored_nonce, str)
+                            or isinstance(stored_expiry, bool)
+                            or not isinstance(stored_expiry, (int, float))
+                        ):
+                            raise RuntimeError("command nonce store has invalid entry")
+                        if int(stored_expiry) >= now:
+                            records[stored_nonce] = int(stored_expiry)
+                finally:
+                    os.close(store_fd)
+
+            stored_expiry = records.get(nonce)
+            if stored_expiry is not None:
+                _USED_NONCES[nonce] = float(stored_expiry)
+                return True
+
+            if len(records) >= _MAX_NONCES:
+                raise RuntimeError("command nonce store capacity exhausted")
+
+            records[nonce] = expiry
+            temp_fd, temp_path = tempfile.mkstemp(
+                prefix=".used-command-nonces.",
+                dir=store_path.parent,
+            )
+            try:
+                os.fchmod(temp_fd, 0o600)
+                with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
+                    json.dump(
+                        records,
+                        temp_file,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                os.replace(temp_path, store_path)
+                temp_path = None
+                directory_fd = os.open(
+                    store_path.parent,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | cloexec,
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except BaseException:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+                raise
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+
+        expired_cached = [
+            cached_nonce
+            for cached_nonce, cached_until in _USED_NONCES.items()
+            if cached_until < now
+        ]
+        for cached_nonce in expired_cached:
+            _USED_NONCES.pop(cached_nonce, None)
+        _USED_NONCES[nonce] = float(expiry)
+        return False
 
 
 def _verify_v2_sig(command_text: str, chat_id: str, sig_payload: str) -> VerifyResult:
@@ -202,8 +325,12 @@ def _verify_v2_sig(command_text: str, chat_id: str, sig_payload: str) -> VerifyR
 
     # Check nonce not reused (do this AFTER sig verification to avoid
     # poisoning the nonce store with forged payloads)
-    if _record_nonce(nonce):
-        return VerifyResult.NONCE_REUSED
+    try:
+        if _record_nonce(nonce, exp):
+            return VerifyResult.NONCE_REUSED
+    except Exception:
+        logger.error("Command nonce store failed closed", exc_info=True)
+        return VerifyResult.MISMATCH
 
     return VerifyResult.OK
 
@@ -219,8 +346,9 @@ def verify_command_sig(command_text: str, sig: str, *, chat_id: str = "") -> Ver
     Supports both v2 (nonce+exp+chat_id) and v1 (HMAC-only) formats:
 
     1. If *sig* is in v2 format and *chat_id* is provided, verify as v2.
-    2. If *sig* matches v1 HMAC-SHA256 format, accept (within compat window).
-    3. Fall back to legacy plain-SHA256 check (within compat window).
+    2. If a callback supplies *chat_id*, reject every unbound legacy format.
+    3. Otherwise accept matching v1 HMAC-SHA256 during migration.
+    4. Fall back to legacy plain-SHA256 within its compatibility window.
 
     Returns :attr:`VerifyResult.OK` when valid.  ``VerifyResult`` implements
     ``__bool__`` so that ``if verify_command_sig(...)`` continues to work
@@ -240,6 +368,13 @@ def verify_command_sig(command_text: str, sig: str, *, chat_id: str = "") -> Ver
         if len(parts) == 4:
             # Verify without chat_id constraint (still checks nonce+exp+hmac)
             return _verify_v2_sig_without_chat_check(command_text, sig)
+        return VerifyResult.MISMATCH
+
+    # A real card callback always carries its chat id. Reject unbound legacy
+    # signatures there so old destructive buttons cannot be copied across
+    # chats or replayed indefinitely. Legacy verification remains available
+    # only to callers that genuinely lack chat context during migration.
+    if chat_id:
         return VerifyResult.MISMATCH
 
     # Try v1 HMAC-SHA256 format
@@ -287,8 +422,12 @@ def _verify_v2_sig_without_chat_check(command_text: str, sig_payload: str) -> Ve
         return VerifyResult.MISMATCH
 
     # Check nonce not reused
-    if _record_nonce(nonce):
-        return VerifyResult.NONCE_REUSED
+    try:
+        if _record_nonce(nonce, exp):
+            return VerifyResult.NONCE_REUSED
+    except Exception:
+        logger.error("Command nonce store failed closed", exc_info=True)
+        return VerifyResult.MISMATCH
 
     return VerifyResult.OK
 

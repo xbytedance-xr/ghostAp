@@ -6,7 +6,7 @@ type correctness, enum stability, serialization round-trip) without pinning
 specific runtime values.
 
 Protected regression scenarios:
-- ACPEventType enum must have exactly 6 members with stable string values
+- ACPEventType enum must have exactly 7 members with stable string values
 - ACPSessionState.to_dict() must produce a dict with exactly 7 specified keys
 - ACPSessionState.from_dict(to_dict()) round-trip must preserve all fields
 - ToolCallInfo.kind must accept the 8 documented values
@@ -34,6 +34,7 @@ from src.acp.models import (
 _EXPECTED_EVENT_TYPES = {
     "TEXT_CHUNK": "text_chunk",
     "THOUGHT_CHUNK": "thought_chunk",
+    "IMAGE_CHUNK": "image_chunk",
     "TOOL_CALL_START": "tool_call_start",
     "TOOL_CALL_UPDATE": "tool_call_update",
     "TOOL_CALL_DONE": "tool_call_done",
@@ -45,8 +46,8 @@ class TestACPEventTypeStability:
     """Assert ACPEventType enum membership and values are stable."""
 
     def test_member_count(self) -> None:
-        """ACPEventType must have exactly 6 members."""
-        assert len(ACPEventType) == 6
+        """ACPEventType must have exactly 7 members."""
+        assert len(ACPEventType) == 7
 
     def test_member_names_and_values(self) -> None:
         """Each member name must map to the expected string value."""

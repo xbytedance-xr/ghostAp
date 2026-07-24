@@ -6,17 +6,23 @@ updates into ACPEvent objects, forwarding them to the registered event handler.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import shlex
+import stat
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import unquote, urlparse
 
 from acp.interfaces import Agent, Client
 from acp.schema import (
@@ -24,11 +30,16 @@ from acp.schema import (
     AgentPlanUpdate,
     AgentThoughtChunk,
     AllowedOutcome,
+    BlobResourceContents,
+    ContentToolCallContent,
     CreateTerminalResponse,
     DeniedOutcome,
+    EmbeddedResourceContentBlock,
+    ImageContentBlock,
     ReadTextFileResponse,
     ReleaseTerminalResponse,
     RequestPermissionResponse,
+    ResourceContentBlock,
     TerminalExitStatus,
     TerminalOutputResponse,
     TextContentBlock,
@@ -45,9 +56,11 @@ except ImportError:
 
 from ..sandbox.executor import DangerousPatternCheckStrategy, SandboxExecutor
 from ..utils.errors import get_error_detail
+from ..utils.text import sanitize_single_line_label
 from .models import (
     ACPEvent,
     ACPEventType,
+    ACPImageInfo,
     PlanEntryInfo,
     PlanInfo,
     ToolCallInfo,
@@ -61,6 +74,73 @@ _MAX_FILE_CHARS = 200_000
 _ACP_PERMISSION_DANGEROUS_CHECK = DangerousPatternCheckStrategy()
 _ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "|", "||", "<", ">", "(", ")", "`"})
+MAX_ACP_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_BASE64_IMAGE_CHARS = ((MAX_ACP_IMAGE_BYTES + 2) // 3) * 4
+SUPPORTED_ACP_IMAGE_MIME_TYPES = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+})
+_IMAGE_MIME_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "image/x-png": "image/png",
+}
+_IMAGE_FILE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_IMAGE_SCAN_IGNORED_DIRS = frozenset({
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "venv",
+})
+_MAX_IMAGE_SCAN_ENTRIES = 50_000
+_MAX_DISCOVERED_IMAGES_PER_PROMPT = 20
+_MAX_DISCOVERED_IMAGE_BYTES_PER_PROMPT = 50 * 1024 * 1024
+_ImageArtifactSignature = tuple[int, int, int]
+_QUOTED_IMAGE_PATH_RE = re.compile(
+    r"""[`'"](?P<path>[^`'"]+\.(?:png|jpe?g|gif|webp|bmp))[`'"]""",
+    re.IGNORECASE,
+)
+_BARE_IMAGE_PATH_RE = re.compile(
+    r"""(?P<path>(?:file://[^\s`"'<>|]+|(?:/|\.\.?/)?[^\s`"'<>|]+\.(?:png|jpe?g|gif|webp|bmp)))""",
+    re.IGNORECASE,
+)
+
+
+@dataclass(eq=False)
+class LocalImageArtifactSnapshot:
+    """One prompt's image baseline and same-root overlap state."""
+
+    root_key: str
+    files: dict[str, _ImageArtifactSignature]
+    complete: bool = True
+    conflicted: bool = False
+    active: bool = True
+
+
+_IMAGE_SNAPSHOT_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+_ACTIVE_IMAGE_SNAPSHOTS: dict[str, list[LocalImageArtifactSnapshot]] = {}
+
+
+def _image_roots_overlap(first: str, second: str) -> bool:
+    """Return whether canonical roots share an ancestor/descendant tree."""
+    first_path = Path(first)
+    second_path = Path(second)
+    try:
+        first_path.relative_to(second_path)
+        return True
+    except ValueError:
+        pass
+    try:
+        second_path.relative_to(first_path)
+        return True
+    except ValueError:
+        return False
 
 
 def _permission_execute_tool_name(command: str) -> str:
@@ -187,6 +267,525 @@ def _safe_resolve_path(root_dir: str, user_path: str) -> Path:
     except Exception as e:
         raise PermissionError(f"path escapes root_dir: {user_path}") from e
     return resolved
+
+
+def _image_name(uri: str | None) -> str:
+    if not uri:
+        return "任务图片"
+    parsed = urlparse(uri)
+    name = Path(unquote(parsed.path or "")).name.strip()
+    return name[:120] or "任务图片"
+
+
+def _normalize_acp_image(
+    *,
+    data: str,
+    mime_type: str,
+    uri: str | None = None,
+    name: str | None = None,
+) -> ACPImageInfo | None:
+    """Validate and normalize an ACP base64 raster payload."""
+    compact = "".join(str(data or "").split())
+    if not compact or len(compact) > _MAX_BASE64_IMAGE_CHARS:
+        return None
+    try:
+        decoded = base64.b64decode(compact, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not decoded or len(decoded) > MAX_ACP_IMAGE_BYTES:
+        return None
+    detected_mime = detect_acp_image_mime(decoded)
+    if detected_mime is None:
+        return None
+    declared_mime = str(mime_type or "").strip().lower()
+    normalized_mime = _IMAGE_MIME_ALIASES.get(declared_mime, declared_mime)
+    if normalized_mime:
+        if (
+            normalized_mime not in SUPPORTED_ACP_IMAGE_MIME_TYPES
+            or normalized_mime != detected_mime
+        ):
+            return None
+    else:
+        normalized_mime = detected_mime
+    canonical_data = base64.b64encode(decoded).decode("ascii")
+    return ACPImageInfo(
+        image_id=f"sha256:{hashlib.sha256(decoded).hexdigest()}",
+        mime_type=normalized_mime,
+        data=canonical_data,
+        name=sanitize_single_line_label(
+            name or _image_name(uri),
+            fallback="任务图片",
+            max_chars=120,
+        ),
+        source_uri=uri or None,
+    )
+
+
+def detect_acp_image_mime(payload: bytes) -> str | None:
+    """Identify supported raster bytes independently from declared metadata."""
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if (
+        len(payload) >= 4
+        and payload.startswith(b"\xff\xd8\xff")
+        and payload.endswith(b"\xff\xd9")
+    ):
+        return "image/jpeg"
+    if (
+        len(payload) >= 14
+        and payload[:6] in {b"GIF87a", b"GIF89a"}
+        and payload.endswith(b";")
+    ):
+        return "image/gif"
+    if (
+        len(payload) >= 12
+        and payload.startswith(b"RIFF")
+        and payload[8:12] == b"WEBP"
+    ):
+        return "image/webp"
+    if len(payload) >= 14 and payload.startswith(b"BM"):
+        return "image/bmp"
+    return None
+
+
+def _read_bounded_file_inside_root(
+    root_dir: str,
+    user_path: str,
+) -> tuple[bytes, Path, _ImageArtifactSignature] | None:
+    """Open one canonical in-root file without following raced symlinks."""
+    try:
+        root = Path(root_dir).expanduser().resolve()
+        resolved = _safe_resolve_path(root_dir, user_path)
+        relative = resolved.relative_to(root)
+    except (OSError, PermissionError, RuntimeError, ValueError):
+        return None
+    if not relative.parts:
+        return None
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | cloexec
+    file_flags = os.O_RDONLY | nofollow | cloexec
+    opened_fds: list[int] = []
+    try:
+        directory_fd = os.open(str(root), directory_flags)
+        opened_fds.append(directory_fd)
+        for part in relative.parts[:-1]:
+            directory_fd = os.open(
+                part,
+                directory_flags,
+                dir_fd=directory_fd,
+            )
+            opened_fds.append(directory_fd)
+        file_fd = os.open(
+            relative.parts[-1],
+            file_flags,
+            dir_fd=directory_fd,
+        )
+        opened_fds.append(file_fd)
+        file_stat = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size > MAX_ACP_IMAGE_BYTES
+        ):
+            return None
+
+        chunks: list[bytes] = []
+        remaining = MAX_ACP_IMAGE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(file_fd, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if not payload or len(payload) > MAX_ACP_IMAGE_BYTES:
+            return None
+        signature = (
+            int(file_stat.st_mtime_ns),
+            int(file_stat.st_ctime_ns),
+            int(file_stat.st_size),
+        )
+        return payload, resolved, signature
+    except OSError:
+        return None
+    finally:
+        for fd in reversed(opened_fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _read_local_image_resource(
+    *,
+    root_dir: str,
+    uri: str,
+    mime_type: str | None,
+    name: str | None,
+    image_snapshot: LocalImageArtifactSnapshot | None = None,
+    require_changed: bool = False,
+) -> ACPImageInfo | None:
+    """Read an ACP local image resource without allowing remote fetches."""
+    parsed = urlparse(uri)
+    if parsed.scheme not in {"", "file"}:
+        return None
+    if parsed.scheme == "file" and parsed.netloc not in {"", "localhost"}:
+        return None
+    if Path(unquote(parsed.path or uri)).suffix.casefold() not in _IMAGE_FILE_SUFFIXES:
+        return None
+    raw_path = unquote(parsed.path) if parsed.scheme == "file" else uri
+    loaded = _read_bounded_file_inside_root(root_dir, raw_path)
+    if loaded is None:
+        return None
+    payload, path, signature = loaded
+    if require_changed and not _snapshot_allows_local_image(
+        root_dir=root_dir,
+        path=path,
+        signature=signature,
+        image_snapshot=image_snapshot,
+    ):
+        return None
+    detected_mime = mime_type or mimetypes.guess_type(path.name)[0] or ""
+    return _normalize_acp_image(
+        data=base64.b64encode(payload).decode("ascii"),
+        mime_type=detected_mime,
+        uri=str(path),
+        name=name or path.name,
+    )
+
+
+def _local_image_candidates(value: Any) -> list[str]:
+    """Extract bounded, path-shaped image references from structured tool output."""
+    candidates: list[str] = []
+    pending = [value]
+    visited = 0
+    while pending and visited < 200:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, dict):
+            pending.extend(current.values())
+            continue
+        if isinstance(current, (list, tuple)):
+            pending.extend(current)
+            continue
+        if not isinstance(current, str):
+            continue
+        text = current[:12_000]
+        candidates.extend(
+            match.group("path").strip()
+            for match in _QUOTED_IMAGE_PATH_RE.finditer(text)
+        )
+        candidates.extend(
+            match.group("path").rstrip(".,;:!?)]}")
+            for match in _BARE_IMAGE_PATH_RE.finditer(text)
+        )
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _iter_local_image_files(
+    root_dir: str,
+    scan_complete: list[bool] | None = None,
+) -> list[Path]:
+    """Enumerate local raster candidates without following links or huge trees."""
+    def _mark_incomplete() -> None:
+        if scan_complete is not None:
+            scan_complete[0] = False
+
+    try:
+        root = Path(root_dir).expanduser().resolve()
+    except (OSError, RuntimeError):
+        _mark_incomplete()
+        return []
+    if not root.is_dir():
+        _mark_incomplete()
+        return []
+
+    found: list[Path] = []
+    stack = [root]
+    inspected = 0
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            _mark_incomplete()
+            continue
+        with entries:
+            for entry in entries:
+                if inspected >= _MAX_IMAGE_SCAN_ENTRIES:
+                    _mark_incomplete()
+                    return found
+                inspected += 1
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name not in _IMAGE_SCAN_IGNORED_DIRS:
+                            stack.append(Path(entry.path))
+                    elif (
+                        entry.is_file(follow_symlinks=False)
+                        and Path(entry.name).suffix.casefold() in _IMAGE_FILE_SUFFIXES
+                    ):
+                        found.append(Path(entry.path))
+                except OSError:
+                    _mark_incomplete()
+                    continue
+    return found
+
+
+def _resolve_image_scan_root(root_dir: str) -> Path | None:
+    try:
+        root = Path(root_dir).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    return root if root.is_dir() else None
+
+
+def _capture_local_image_artifacts(
+    root_dir: str,
+    scan_complete: list[bool] | None = None,
+) -> dict[str, _ImageArtifactSignature]:
+    snapshot: dict[str, _ImageArtifactSignature] = {}
+    for path in _iter_local_image_files(root_dir, scan_complete):
+        try:
+            stat = path.stat()
+            snapshot[str(path)] = (
+                int(stat.st_mtime_ns),
+                int(stat.st_ctime_ns),
+                int(stat.st_size),
+            )
+        except OSError:
+            if scan_complete is not None:
+                scan_complete[0] = False
+            continue
+    return snapshot
+
+
+def snapshot_local_image_artifacts(
+    root_dir: str,
+) -> LocalImageArtifactSnapshot:
+    """Capture a prompt baseline and mark overlapping same-root scans unsafe."""
+    root = _resolve_image_scan_root(root_dir)
+    if root is None:
+        return LocalImageArtifactSnapshot(
+            root_key="",
+            files={},
+            complete=False,
+            active=False,
+        )
+
+    snapshot = LocalImageArtifactSnapshot(root_key=str(root), files={})
+    with _IMAGE_SNAPSHOT_LOCK:
+        overlapping = [
+            other
+            for root_key, snapshots in _ACTIVE_IMAGE_SNAPSHOTS.items()
+            if _image_roots_overlap(snapshot.root_key, root_key)
+            for other in snapshots
+        ]
+        if overlapping:
+            snapshot.conflicted = True
+            for other in overlapping:
+                other.conflicted = True
+        active = _ACTIVE_IMAGE_SNAPSHOTS.setdefault(snapshot.root_key, [])
+        active.append(snapshot)
+    try:
+        scan_complete = [True]
+        snapshot.files = _capture_local_image_artifacts(
+            snapshot.root_key,
+            scan_complete,
+        )
+        snapshot.complete = scan_complete[0]
+    except BaseException:
+        release_local_image_artifact_snapshot(snapshot)
+        raise
+    return snapshot
+
+
+def release_local_image_artifact_snapshot(
+    snapshot: LocalImageArtifactSnapshot | Mapping[str, _ImageArtifactSignature],
+) -> None:
+    """Release an image baseline lease; safe to call more than once."""
+    if not isinstance(snapshot, LocalImageArtifactSnapshot):
+        return
+    with _IMAGE_SNAPSHOT_LOCK:
+        if not snapshot.active:
+            return
+        snapshot.active = False
+        active = _ACTIVE_IMAGE_SNAPSHOTS.get(snapshot.root_key)
+        if active is None:
+            return
+        try:
+            active.remove(snapshot)
+        except ValueError:
+            pass
+        if not active:
+            _ACTIVE_IMAGE_SNAPSHOTS.pop(snapshot.root_key, None)
+
+
+def _snapshot_allows_local_image(
+    *,
+    root_dir: str,
+    path: Path,
+    signature: _ImageArtifactSignature,
+    image_snapshot: LocalImageArtifactSnapshot | None,
+) -> bool:
+    """Prove an explicitly referenced local image changed in this prompt."""
+    if image_snapshot is None:
+        return False
+    resolved_root = _resolve_image_scan_root(root_dir)
+    if resolved_root is None:
+        return False
+    try:
+        resolved_path = path.resolve()
+        relative_path = resolved_path.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if any(
+        component in _IMAGE_SCAN_IGNORED_DIRS
+        for component in relative_path.parts[:-1]
+    ):
+        return False
+    with _IMAGE_SNAPSHOT_LOCK:
+        if (
+            not image_snapshot.complete
+            or image_snapshot.conflicted
+            or not image_snapshot.active
+            or image_snapshot.root_key != str(resolved_root)
+        ):
+            return False
+        return image_snapshot.files.get(str(resolved_path)) != signature
+
+
+def emit_referenced_changed_local_image_events(
+    root_dir: str,
+    before: LocalImageArtifactSnapshot | Mapping[str, _ImageArtifactSignature],
+    references: Any,
+    on_event: Callable[[ACPEvent], None],
+) -> int:
+    """Publish only explicitly referenced local images changed since baseline."""
+    snapshot = before if isinstance(before, LocalImageArtifactSnapshot) else None
+    emitted = 0
+    seen_ids: set[str] = set()
+    total_bytes = 0
+    try:
+        for path in _local_image_candidates(references):
+            if emitted >= _MAX_DISCOVERED_IMAGES_PER_PROMPT:
+                break
+            image = _read_local_image_resource(
+                root_dir=root_dir,
+                uri=path,
+                mime_type=None,
+                name=None,
+                image_snapshot=snapshot,
+                require_changed=True,
+            )
+            if image is None or image.image_id in seen_ids:
+                continue
+            image_bytes = (len(image.data) * 3) // 4
+            if total_bytes + image_bytes > _MAX_DISCOVERED_IMAGE_BYTES_PER_PROMPT:
+                break
+            seen_ids.add(image.image_id)
+            total_bytes += image_bytes
+            on_event(
+                ACPEvent(
+                    event_type=ACPEventType.IMAGE_CHUNK,
+                    image=image,
+                )
+            )
+            emitted += 1
+    finally:
+        release_local_image_artifact_snapshot(before)
+    return emitted
+
+
+def _parse_acp_image_content(
+    content: Any,
+    *,
+    root_dir: str,
+    image_snapshot: LocalImageArtifactSnapshot | None = None,
+) -> ACPImageInfo | None:
+    """Extract supported image representations from ACP content blocks."""
+    if isinstance(content, ImageContentBlock):
+        return _normalize_acp_image(
+            data=content.data,
+            mime_type=content.mime_type,
+            uri=content.uri,
+        )
+    if isinstance(content, EmbeddedResourceContentBlock):
+        resource = content.resource
+        if isinstance(resource, BlobResourceContents):
+            return _normalize_acp_image(
+                data=resource.blob,
+                mime_type=resource.mime_type or "",
+                uri=resource.uri,
+            )
+        return None
+    if isinstance(content, ResourceContentBlock):
+        return _read_local_image_resource(
+            root_dir=root_dir,
+            uri=content.uri,
+            mime_type=content.mime_type,
+            name=content.title or content.name,
+            image_snapshot=image_snapshot,
+            require_changed=True,
+        )
+    return None
+
+
+def _tool_call_images(
+    update: ToolCallStart | ToolCallProgress,
+    *,
+    root_dir: str,
+    image_snapshot: LocalImageArtifactSnapshot | None = None,
+) -> list[ACPImageInfo]:
+    status = str(update.status or "").strip().lower()
+    kind = str(update.kind or "other").strip().lower() or "other"
+    title = str(update.title or "").casefold()
+    is_output_capable = kind not in {"read", "search", "fetch", "delete"} and not any(
+        marker in title for marker in ("read image", "view image", "读取图片", "查看图片")
+    )
+    # Tool content is often its input/reference material on START/PROGRESS.
+    # Only a completed output-capable tool may publish image artifacts.
+    if status != "completed" or not is_output_capable:
+        return []
+
+    images: list[ACPImageInfo] = []
+    path_candidates: list[str] = []
+    for item in update.content or []:
+        if not isinstance(item, ContentToolCallContent):
+            continue
+        image = _parse_acp_image_content(
+            item.content,
+            root_dir=root_dir,
+            image_snapshot=image_snapshot,
+        )
+        if image is not None:
+            images.append(image)
+        elif isinstance(item.content, TextContentBlock):
+            path_candidates.extend(_local_image_candidates(item.content.text))
+
+    path_candidates.extend(
+        str(location.path)
+        for location in (update.locations or [])
+        if getattr(location, "path", None)
+    )
+    path_candidates.extend(_local_image_candidates(update.raw_output))
+
+    for path in dict.fromkeys(path_candidates):
+        image = _read_local_image_resource(
+            root_dir=root_dir,
+            uri=path,
+            mime_type=None,
+            name=None,
+            image_snapshot=image_snapshot,
+            require_changed=True,
+        )
+        if image is not None:
+            images.append(image)
+
+    unique: dict[str, ACPImageInfo] = {}
+    for image in images:
+        unique.setdefault(image.image_id, image)
+    return list(unique.values())
 
 
 def _validated_env_overrides(env: Optional[list[Any]]) -> dict[str, str]:
@@ -457,6 +1056,8 @@ class GhostAPClient(Client):
         self._terminals_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._history = history_store or ACPHistoryStore()
         self._tool_filter: Optional[Callable[[str, dict | None], bool]] = None
+        self._image_snapshot_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._active_image_snapshot: LocalImageArtifactSnapshot | None = None
 
     def set_tool_filter(self, filter_fn: Optional[Callable[[str, dict | None], bool]]) -> None:
         """Install or clear a per-session tool filter."""
@@ -465,6 +1066,35 @@ class GhostAPClient(Client):
     def get_tool_filter(self) -> Optional[Callable[[str, dict | None], bool]]:
         """Return the current per-session tool filter, if any."""
         return self._tool_filter
+
+    def snapshot_local_images(self) -> LocalImageArtifactSnapshot:
+        """Capture bounded image file metadata before a prompt starts."""
+        snapshot = snapshot_local_image_artifacts(self._root_dir)
+        with self._image_snapshot_lock:
+            self._active_image_snapshot = snapshot
+        return snapshot
+
+    def release_local_image_snapshot(
+        self,
+        before: LocalImageArtifactSnapshot | Mapping[str, _ImageArtifactSignature],
+    ) -> None:
+        """Release a prompt snapshot and clear its local attribution context."""
+        with self._image_snapshot_lock:
+            if self._active_image_snapshot is before:
+                self._active_image_snapshot = None
+        release_local_image_artifact_snapshot(before)
+
+    def _current_image_snapshot(self) -> LocalImageArtifactSnapshot | None:
+        with self._image_snapshot_lock:
+            return self._active_image_snapshot
+
+    def release_active_local_image_snapshot(self) -> None:
+        """Release any prompt attribution lease still owned during shutdown."""
+        with self._image_snapshot_lock:
+            snapshot = self._active_image_snapshot
+            self._active_image_snapshot = None
+        if snapshot is not None:
+            release_local_image_artifact_snapshot(snapshot)
 
     def _is_tool_allowed(self, tool_name: str, args: dict | None = None) -> bool:
         filter_fn = self._tool_filter
@@ -513,7 +1143,18 @@ class GhostAPClient(Client):
                     source_id=_extract_update_source_id(update),
                 )
             )
-        # Handle other content types if needed
+        elif image := _parse_acp_image_content(
+            content,
+            root_dir=self._root_dir,
+            image_snapshot=self._current_image_snapshot(),
+        ):
+            self._on_event(
+                ACPEvent(
+                    event_type=ACPEventType.IMAGE_CHUNK,
+                    image=image,
+                    source_id=_extract_update_source_id(update),
+                )
+            )
         else:
             logger.debug(f"Unhandled content type in message chunk: {type(content)}")
 
@@ -527,7 +1168,18 @@ class GhostAPClient(Client):
                     source_id=_extract_update_source_id(update),
                 )
             )
-        # Handle other content types if needed
+        elif image := _parse_acp_image_content(
+            content,
+            root_dir=self._root_dir,
+            image_snapshot=self._current_image_snapshot(),
+        ):
+            self._on_event(
+                ACPEvent(
+                    event_type=ACPEventType.IMAGE_CHUNK,
+                    image=image,
+                    source_id=_extract_update_source_id(update),
+                )
+            )
         else:
             logger.debug(f"Unhandled content type in thought chunk: {type(content)}")
 
@@ -539,12 +1191,16 @@ class GhostAPClient(Client):
                 tool_call=tool_info,
             )
         )
+        self._emit_tool_images(update)
 
     def _handle_tool_call_progress(self, update: ToolCallProgress) -> None:
         tool_info = _parse_tool_call(update)
         status = tool_info.status
         if status in ("completed", "failed"):
             event_type = ACPEventType.TOOL_CALL_DONE
+            # Publish artifacts while the tool/task card is still open. The
+            # terminal event closes that target and fences later mutations.
+            self._emit_tool_images(update)
         else:
             event_type = ACPEventType.TOOL_CALL_UPDATE
         self._on_event(
@@ -553,6 +1209,20 @@ class GhostAPClient(Client):
                 tool_call=tool_info,
             )
         )
+
+    def _emit_tool_images(self, update: ToolCallStart | ToolCallProgress) -> None:
+        for image in _tool_call_images(
+            update,
+            root_dir=self._root_dir,
+            image_snapshot=self._current_image_snapshot(),
+        ):
+            self._on_event(
+                ACPEvent(
+                    event_type=ACPEventType.IMAGE_CHUNK,
+                    image=image,
+                    source_id=update.tool_call_id,
+                )
+            )
 
     def _handle_plan_update(self, update: AgentPlanUpdate) -> None:
         plan = _parse_plan(update)

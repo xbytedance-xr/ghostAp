@@ -1960,10 +1960,20 @@ class TestSendLockConflictCardFacade(unittest.TestCase):
         client._system_handler = sentinel_obj  # old path would use this
 
         err = RuntimeError("lock conflict")
-        client.send_lock_conflict_card(err, "msg_1", "/deep fix", retry_count=2)
+        client.send_lock_conflict_card(
+            err,
+            "msg_1",
+            "/deep fix",
+            retry_count=2,
+            chat_id="chat-1",
+        )
 
         mock_system_handler.send_lock_conflict_card.assert_called_once_with(
-            err, "msg_1", "/deep fix", retry_count=2,
+            err,
+            "msg_1",
+            "/deep fix",
+            retry_count=2,
+            chat_id="chat-1",
         )
         sentinel_obj.send_lock_conflict_card.assert_not_called()
 

@@ -69,6 +69,52 @@ class TestACPStreamBridgeBehavior:
         assert len(disp.events) >= 2
         assert disp.events[0].type == CardEventType.TEXT_STARTED
 
+    def test_image_event_dispatches_uploaded_image_once(self):
+        from unittest.mock import MagicMock
+
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo
+
+        image = ACPImageInfo(
+            image_id="sha256:generated",
+            mime_type="image/png",
+            data="aW1hZ2U=",
+            name="generated.png",
+        )
+        uploader = MagicMock(return_value="img_generated")
+        disp = FakeDispatchable()
+        bridge = ACPStreamBridge(disp, image_uploader=uploader)
+        event = ACPEvent(event_type=ACPEventType.IMAGE_CHUNK, image=image)
+
+        bridge.on_event(event)
+        bridge.on_event(event)
+
+        uploader.assert_called_once_with(image)
+        assert [item.type for item in disp.events] == [CardEventType.IMAGE_ADDED]
+        assert disp.events[0].payload["image_key"] == "img_generated"
+
+    def test_image_publisher_rebinds_to_rotated_session(self):
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo
+
+        old = FakeDispatchable()
+        new = FakeDispatchable()
+        bridge = ACPStreamBridge(old, image_uploader=lambda _: "img_generated")
+        bridge.bind(new)
+
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.IMAGE_CHUNK,
+                image=ACPImageInfo(
+                    image_id="sha256:rotated",
+                    mime_type="image/png",
+                    data="aW1hZ2U=",
+                    name="rotated.png",
+                ),
+            )
+        )
+
+        assert old.events == []
+        assert [item.type for item in new.events] == [CardEventType.IMAGE_ADDED]
+
     def test_close_open_blocks_closes_text(self):
         """close_open_blocks emits text_done if text was active."""
         from unittest.mock import MagicMock
@@ -184,8 +230,8 @@ class TestACPStreamBridgeBehavior:
         assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 1
         assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
 
-    def test_tool_call_keeps_reasoning_summary_but_splits_streamed_text(self):
-        """Tools split answer text without fragmenting one source's process summary."""
+    def test_tool_call_splits_reasoning_and_text_into_chronological_turns(self):
+        """A tool boundary must preserve analysis/tool chronology in card state."""
         from unittest.mock import MagicMock
 
         from src.acp import ACPEventType
@@ -210,14 +256,128 @@ class TestACPStreamBridgeBehavior:
         bridge.on_event(_event(ACPEventType.THOUGHT_CHUNK, "继续分析"))
 
         assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 1
-        assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 0
+        assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
         text_started = [e for e in disp.events if e.type == CardEventType.TEXT_STARTED]
         assert [e.payload["block_id"] for e in text_started] == ["_active_text", "_turn_2_text"]
         reasoning_started = [e for e in disp.events if e.type == CardEventType.REASONING_STARTED]
         reasoning_deltas = [e for e in disp.events if e.type == CardEventType.REASONING_DELTA]
-        assert [e.payload["block_id"] for e in reasoning_started] == ["_active_reasoning"]
-        assert {e.payload["block_id"] for e in reasoning_deltas} == {"_active_reasoning"}
-        assert [e.payload["text"] for e in reasoning_deltas] == ["引用", "\n继续分析"]
+        assert [e.payload["block_id"] for e in reasoning_started] == [
+            "_active_reasoning",
+            "_turn_2_reasoning",
+        ]
+        assert [e.payload["block_id"] for e in reasoning_deltas] == [
+            "_active_reasoning",
+            "_turn_2_reasoning",
+        ]
+        assert [e.payload["text"] for e in reasoning_deltas] == ["引用", "继续分析"]
+
+    def test_tool_boundary_retires_reasoning_from_a_different_source(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        disp = FakeDispatchable()
+        bridge = ACPStreamBridge(disp)
+
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="工具前分析",
+                source_id="agent-a",
+            )
+        )
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_START,
+                tool_call=ToolCallInfo(
+                    id="read-cross-source",
+                    title="Read",
+                    kind="read",
+                    status="in_progress",
+                ),
+            )
+        )
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="工具后分析",
+                source_id="agent-a",
+            )
+        )
+
+        reasoning_started = [
+            event
+            for event in disp.events
+            if event.type == CardEventType.REASONING_STARTED
+        ]
+        reasoning_deltas = [
+            event
+            for event in disp.events
+            if event.type == CardEventType.REASONING_DELTA
+        ]
+        assert len(reasoning_started) == 2
+        assert len(
+            {event.payload["block_id"] for event in reasoning_started}
+        ) == 2
+        assert [
+            event.payload["block_id"] for event in reasoning_deltas
+        ] == [
+            event.payload["block_id"] for event in reasoning_started
+        ]
+
+    def test_image_boundary_retires_reasoning_before_later_thought(self):
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo
+
+        disp = FakeDispatchable()
+        bridge = ACPStreamBridge(
+            disp,
+            image_uploader=lambda _: "img_boundary",
+        )
+
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="图片前分析",
+                source_id="agent-a",
+            )
+        )
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.IMAGE_CHUNK,
+                image=ACPImageInfo(
+                    image_id="sha256:boundary",
+                    mime_type="image/png",
+                    data="aW1hZ2U=",
+                    name="boundary.png",
+                ),
+                source_id="image-tool",
+            )
+        )
+        bridge.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="图片后分析",
+                source_id="agent-a",
+            )
+        )
+
+        reasoning_started = [
+            event
+            for event in disp.events
+            if event.type == CardEventType.REASONING_STARTED
+        ]
+        reasoning_deltas = [
+            event
+            for event in disp.events
+            if event.type == CardEventType.REASONING_DELTA
+        ]
+        assert len(reasoning_started) == 2
+        assert len(
+            {event.payload["block_id"] for event in reasoning_started}
+        ) == 2
+        assert [
+            event.payload["block_id"] for event in reasoning_deltas
+        ] == [
+            event.payload["block_id"] for event in reasoning_started
+        ]
 
     def test_interleaved_text_chunks_from_different_sources_use_separate_blocks(self):
         """Concurrent agent text streams must not append into the same text block."""

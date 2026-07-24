@@ -8,9 +8,12 @@ isolation from the others.  The mock dispatch object conforms to
 from __future__ import annotations
 
 import hashlib
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from src.utils.signing import sign_command
 
 _SIGNING_KEY = "test_secret_for_retry_handler"
 
@@ -185,6 +188,10 @@ class TestProbeRepoLock:
 
         assert result is True
         dispatch.send_lock_conflict_card.assert_called_once()
+        assert dispatch.send_lock_conflict_card.call_args.kwargs == {
+            "retry_count": 1,
+            "chat_id": "chat_3",
+        }
         mock_lock_mgr.release.assert_not_called()
 
 
@@ -215,6 +222,10 @@ class TestDispatchIntent:
 
         dispatch.process_with_intent.assert_called_once()
         dispatch.send_lock_conflict_card.assert_called_once()
+        assert dispatch.send_lock_conflict_card.call_args.kwargs == {
+            "retry_count": 1,
+            "chat_id": "chat_2",
+        }
 
     def test_other_exception_reraises(self):
         handler, dispatch = _make_handler()
@@ -272,9 +283,19 @@ class TestRetryDispatchProtocol:
         adapter = _RetryDispatchAdapter(mock_client)
 
         err = MagicMock()
-        adapter.send_lock_conflict_card(err, "mid", "/run", retry_count=1)
+        adapter.send_lock_conflict_card(
+            err,
+            "mid",
+            "/run",
+            retry_count=1,
+            chat_id="chat_1",
+        )
         mock_client.send_lock_conflict_card.assert_called_once_with(
-            err, "mid", "/run", retry_count=1
+            err,
+            "mid",
+            "/run",
+            retry_count=1,
+            chat_id="chat_1",
         )
 
 
@@ -287,16 +308,19 @@ class TestUndoLockExpiry:
     """When undo_lock=True and undo_expires is in the past, reply with expiry message."""
 
     @patch("src.utils.signing._get_signing_key", return_value=_SIGNING_KEY)
-    def test_expired_undo_replies_expiry_msg(self, _mock_key):
-        import time
+    def test_expired_undo_replies_expiry_msg(self, _mock_key, tmp_path):
         handler, dispatch = _make_handler()
         val = {
             "command_text": "/unlock",
-            "command_sig": _compute_hmac_sig("/unlock"),
+            "command_sig": sign_command("/unlock", "chat_1"),
             "undo_lock": True,
             "undo_expires": int(time.time()) - 10,  # expired 10s ago
         }
-        handler("mid_undo_1", "chat_1", None, val)
+        with patch(
+            "src.utils.signing._nonce_store_path",
+            return_value=tmp_path / "used-command-nonces.json",
+        ):
+            handler("mid_undo_1", "chat_1", None, val)
         dispatch.reply_text.assert_called_once()
         msg = dispatch.reply_text.call_args[0][1]
         assert "撤销窗口已关闭" in msg
@@ -305,17 +329,25 @@ class TestUndoLockExpiry:
 
     @patch("src.utils.signing._get_signing_key", return_value=_SIGNING_KEY)
     @patch("src.thread.get_current_sender_id", return_value="sender_1")
-    def test_valid_undo_dispatches_unlock(self, _mock_sender, _mock_key):
-        import time
+    def test_valid_undo_dispatches_unlock(
+        self,
+        _mock_sender,
+        _mock_key,
+        tmp_path,
+    ):
         handler, dispatch = _make_handler()
         dispatch.get_active_project.return_value = None
         val = {
             "command_text": "/unlock",
-            "command_sig": _compute_hmac_sig("/unlock"),
+            "command_sig": sign_command("/unlock", "chat_2"),
             "undo_lock": True,
             "undo_expires": int(time.time()) + 300,  # still valid
         }
-        handler("mid_undo_2", "chat_2", None, val)
+        with patch(
+            "src.utils.signing._nonce_store_path",
+            return_value=tmp_path / "used-command-nonces.json",
+        ):
+            handler("mid_undo_2", "chat_2", None, val)
         # Should dispatch the /unlock command
         dispatch.process_with_intent.assert_called_once()
         assert dispatch.process_with_intent.call_args[0][2] == "/unlock"

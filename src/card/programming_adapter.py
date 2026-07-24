@@ -14,19 +14,20 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
-from src.acp.renderer import ACPEventRenderer
 from src.card.events import CardEvent, CardEventType
+from src.card.media_bridge import ACPImagePublisher
 from src.card.render.live_ticker import LiveTicker
 from src.card.session import CardSession
 from src.card.session.rotator import SessionRotator
 from src.card.state.models import CardMetadata
 from src.card.tool_display import (
+    extract_agent_tool_name,
     extract_tool_call_label,
     is_unhelpful_display_label,
 )
 
 if TYPE_CHECKING:
-    from src.acp.models import ACPEvent, ToolCallInfo
+    from src.acp.models import ACPEvent, ACPImageInfo, ToolCallInfo
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +95,21 @@ class ProgrammingCardSession:
         session_factory: Callable[[CardMetadata], CardSession] | None = None,
         subagent_session_factory: Callable[..., CardSession] | None = None,
         base_metadata: CardMetadata | None = None,
+        image_uploader: Callable[["ACPImageInfo"], str | None] | None = None,
     ) -> None:
         self._session = session
         self._rotator = SessionRotator(session)
         self._session_factory = session_factory
         self._subagent_session_factory = subagent_session_factory
-        self._base_metadata = base_metadata or CardMetadata()
+        self._base_metadata = (
+            base_metadata
+            or getattr(session, "_metadata", None)
+            or CardMetadata()
+        )
+        self._image_uploader = image_uploader
+        self._image_publisher = ACPImagePublisher(self._rotator, image_uploader)
+        self._agent_image_publishers: dict[str, ACPImagePublisher] = {}
+        self._routed_image_ids: set[str] = set()
         self._text_active = False
         self._active_text_block_id = "_active_text"
         self._pending_text_block_id: str | None = None
@@ -121,9 +131,8 @@ class ProgrammingCardSession:
         self._latest_plan_event: CardEvent | None = None
         self._agent_sessions: dict[str, CardSession] = {}
         self._agent_summaries: dict[str, dict] = {}
-        self._acp_renderer = ACPEventRenderer()
-        self._turn_snapshots = ()
         self._text_turn_seq = 0
+        self._reasoning_turn_seq = 0
         self._last_tool_boundary_seq = 0
         self._ticker_factory = LiveTicker
         self._ticker = None
@@ -160,16 +169,28 @@ class ProgrammingCardSession:
 
         Text deltas are batched for efficiency. Structural events flush immediately.
         """
+        from src.acp.models import ACPEventType
+
         card_event = None
+        if acp_event.event_type is ACPEventType.IMAGE_CHUNK:
+            if self._handle_agent_image_event(acp_event):
+                return
+            self._flush_now()
+            self._last_tool_boundary_seq += 1
+            if self._text_active:
+                self._close_text_blocks()
+            if self._reasoning_blocks_by_source:
+                self._close_reasoning_blocks(retire=True)
+            self._image_publisher.handle(acp_event)
+            if acp_event.image is not None:
+                self._routed_image_ids.add(acp_event.image.image_id)
+            return
         if getattr(acp_event, "event_type", None).name == "PLAN_UPDATE":
             self._handle_plan_update(acp_event)
             return
 
         if self._handle_agent_task_event(acp_event):
             return
-
-        self._acp_renderer.ingest_event(acp_event)
-        self._turn_snapshots = self._acp_renderer.snapshot_turns()
 
         card_event = CardEvent.from_acp(acp_event)
 
@@ -214,16 +235,14 @@ class ProgrammingCardSession:
         # Structural event: flush pending text first
         self._flush_now()
 
-        # Tool events split streamed answer text, but reasoning remains one
-        # secondary process summary for the whole source/task. Closing it for
-        # every tool produces alternating one-tool/one-thought panels.
+        # Tool events are hard execution boundaries. Retire both active stream
+        # blocks so later analysis is appended after the tool in CardState,
+        # preserving the provider's actual event order for timeline rendering.
         if card_event.type == CardEventType.TOOL_STARTED:
             self._last_tool_boundary_seq += 1
             if self._text_active:
                 self._close_text_blocks()
-            source_key = self._source_key(acp_event)
-            if source_key in self._reasoning_sources_with_content:
-                self._pending_reasoning_item_breaks.add(source_key)
+            self._close_reasoning_blocks(retire=True)
 
         # Text resumed after tool
         if card_event.type == CardEventType.TEXT_STARTED:
@@ -287,6 +306,44 @@ class ProgrammingCardSession:
         self._rotator.dispatch(CardEvent.failed(error))
         self._stop_ticker()
 
+    def cancel(self, *, reason: str = "cancelled") -> None:
+        """Mark the parent and any live child cards as cancelled."""
+        self._cancel_timer()
+        self._flush_now()
+        if self._text_active:
+            self._close_text_blocks()
+        if self._reasoning_active:
+            self._close_reasoning_blocks()
+        for session in self._agent_sessions.values():
+            if not session.closed:
+                session.dispatch(CardEvent.cancelled(reason=reason))
+        summary_changed = False
+        terminal_statuses = {"completed", "failed", "cancelled"}
+        for tool_id, existing in list(self._agent_summaries.items()):
+            if existing.get("status") in terminal_statuses:
+                continue
+            session = self._agent_sessions.get(tool_id)
+            state = getattr(session, "state", None)
+            status = getattr(state, "terminal", "") or ""
+            if status not in terminal_statuses:
+                status = "cancelled"
+            self._agent_summaries[tool_id] = {**existing, "status": status}
+            summary_changed = True
+        if summary_changed and not self._rotator.current.closed:
+            try:
+                self._rotator.dispatch(
+                    CardEvent.tool_model_changed(
+                        subagents=tuple(self._agent_summaries.values())
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to publish cancelled subagent summary; "
+                    "continuing parent terminal transition"
+                )
+        self._rotator.dispatch(CardEvent.cancelled(reason=reason))
+        self._stop_ticker()
+
     def update_tool_model(self, tool_name: str | None = None, model_name: str | None = None) -> None:
         """Update the displayed tool/model in header subtitle."""
         self._flush_now()
@@ -326,6 +383,7 @@ class ProgrammingCardSession:
         )
         if succeeded:
             self._agent_sessions.clear()
+            self._agent_image_publishers.clear()
         return succeeded
 
     def abort(self) -> None:
@@ -335,6 +393,7 @@ class ProgrammingCardSession:
         for session in self._agent_sessions.values():
             session.close()
         self._agent_sessions.clear()
+        self._agent_image_publishers.clear()
         self._rotator.close()
 
     def get_final_text(self) -> str:
@@ -418,14 +477,28 @@ class ProgrammingCardSession:
         self._active_text_sources.clear()
         self._text_active = False
 
-    def _close_reasoning_blocks(self) -> None:
-        for source_key in list(self._active_reasoning_sources):
-            block_id = self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
+    def _close_reasoning_blocks(self, *, retire: bool = False) -> None:
+        source_keys = (
+            self._reasoning_blocks_by_source
+            if retire
+            else self._active_reasoning_sources
+        )
+        for source_key in list(source_keys):
+            self._close_reasoning_source(source_key, retire=retire)
+
+    def _close_reasoning_source(self, source_key: str, *, retire: bool = False) -> None:
+        """Close one source's reasoning block and optionally retire its ID."""
+        block_id = self._reasoning_blocks_by_source.get(source_key)
+        if source_key in self._active_reasoning_sources and block_id:
             self._rotator.dispatch(CardEvent.reasoning_done(block_id))
-            if source_key in self._reasoning_sources_with_content:
+            self._active_reasoning_sources.discard(source_key)
+            if source_key in self._reasoning_sources_with_content and not retire:
                 self._pending_reasoning_item_breaks.add(source_key)
-        self._active_reasoning_sources.clear()
-        self._reasoning_active = False
+        if retire:
+            self._reasoning_blocks_by_source.pop(source_key, None)
+            self._pending_reasoning_item_breaks.discard(source_key)
+            self._reasoning_sources_with_content.discard(source_key)
+        self._reasoning_active = bool(self._active_reasoning_sources)
 
     def _current_text_block_id(self, source_key: str = "main") -> str:
         """Return the stable text block ID for the current ACP turn."""
@@ -436,8 +509,9 @@ class ProgrammingCardSession:
         return self._block_id("text", self._text_turn_seq, source_key)
 
     def _current_reasoning_block_id(self, source_key: str = "main") -> str:
-        """Return the stable process-summary block ID for one ACP source."""
-        return self._block_id("reasoning", 1, source_key)
+        """Return the next reasoning block ID after a hard execution boundary."""
+        self._reasoning_turn_seq += 1
+        return self._block_id("reasoning", self._reasoning_turn_seq, source_key)
 
     @staticmethod
     def _source_key(acp_event: "ACPEvent") -> str:
@@ -538,10 +612,24 @@ class ProgrammingCardSession:
 
     def _handle_agent_task_event(self, acp_event: "ACPEvent") -> bool:
         tool_call = getattr(acp_event, "tool_call", None)
-        if tool_call is None or not self._is_agent_task(tool_call):
+        if tool_call is None:
             return False
 
-        session = self._ensure_agent_task_session(tool_call)
+        # Providers may change the title/kind/content shape between START,
+        # UPDATE, and DONE. Once a call id is bound to a child card, keep
+        # routing by that stable identity instead of reclassifying every frame.
+        session = self._agent_sessions.get(tool_call.id)
+        if session is not None and session.closed:
+            return True
+        if session is None:
+            if not self._is_agent_task(tool_call):
+                return False
+            session = self._ensure_agent_task_session(tool_call)
+        if session is None:
+            # Degrade to the ordinary parent tool timeline. Reusing the parent
+            # as a "child" would dispatch COMPLETED to the whole task when this
+            # one tool finishes.
+            return False
         event_name = getattr(acp_event, "event_type", None).name if getattr(acp_event, "event_type", None) else ""
         if event_name != "TOOL_CALL_DONE" and self._rename_agent_task_from_tool_label(tool_call, session):
             self._update_agent_summary(tool_call, status="running", session=session)
@@ -556,13 +644,19 @@ class ProgrammingCardSession:
                 self._update_agent_summary(tool_call, status="completed")
         return True
 
-    def _ensure_agent_task_session(self, tool_call: "ToolCallInfo") -> CardSession:
+    def _ensure_agent_task_session(
+        self,
+        tool_call: "ToolCallInfo",
+    ) -> CardSession | None:
         existing = self._agent_sessions.get(tool_call.id)
         if existing is not None and not existing.closed:
             return existing
 
-        if self._session_factory is None:
-            return self._rotator.current
+        if (
+            self._session_factory is None
+            and self._subagent_session_factory is None
+        ):
+            return None
 
         task_label = self._extract_agent_task_label(tool_call)
         branch_id = chr(ord("a") + len(self._agent_sessions))
@@ -588,13 +682,55 @@ class ProgrammingCardSession:
                 metadata=metadata,
             )
         else:
+            assert self._session_factory is not None
             session = self._session_factory(metadata)
         session.dispatch(CardEvent.started())
         if self._latest_plan_event is not None:
             session.dispatch(self._latest_plan_event)
         self._agent_sessions[tool_call.id] = session
+        self._agent_image_publishers[tool_call.id] = ACPImagePublisher(
+            session,
+            self._image_uploader,
+        )
         self._update_agent_summary(tool_call, status="running", session=session)
         return session
+
+    def _handle_agent_image_event(self, acp_event: "ACPEvent") -> bool:
+        """Route tool-owned media to its child card or an attributed fallback."""
+        source_id = str(getattr(acp_event, "source_id", "") or "").strip()
+        if not source_id:
+            return False
+        session = self._agent_sessions.get(source_id)
+        if session is None:
+            return False
+        image = getattr(acp_event, "image", None)
+        if image is not None and image.image_id in self._routed_image_ids:
+            return True
+
+        if not session.closed:
+            publisher = self._agent_image_publishers.get(source_id)
+            if publisher is None:
+                publisher = ACPImagePublisher(session, self._image_uploader)
+                self._agent_image_publishers[source_id] = publisher
+            handled = publisher.handle(acp_event)
+        else:
+            metadata = (
+                session.state.metadata
+                if session.state is not None
+                else getattr(session, "_metadata", None)
+            )
+            label = str(getattr(metadata, "unit_label", "") or "子任务").strip()
+            if image is not None:
+                attributed_name = f"{label} · {image.name}"
+                acp_event = replace(
+                    acp_event,
+                    image=replace(image, name=attributed_name[:120]),
+                )
+            handled = self._image_publisher.handle(acp_event)
+
+        if handled and image is not None:
+            self._routed_image_ids.add(image.image_id)
+        return handled
 
     def _rename_agent_task_from_tool_label(self, tool_call: "ToolCallInfo", session: CardSession) -> bool:
         label = self._extract_agent_task_label(tool_call)
@@ -666,10 +802,16 @@ class ProgrammingCardSession:
     @staticmethod
     def _is_agent_task(tool_call: "ToolCallInfo") -> bool:
         title = (tool_call.title or "").strip().lower()
+        kind = (tool_call.kind or "").strip().lower()
         content = (tool_call.content or "").strip()
-        if title in _AGENT_TOOL_TITLES:
+        if kind == "agent" or title in _AGENT_TOOL_TITLES:
             return True
-        return "子代理：" in content
+        # Some ACP backends expose agent tools as kind=other and put the
+        # subagent identity in the formatted input. Never inspect the output of
+        # concrete tools such as execute/read/edit: source code or command
+        # output can legitimately contain this marker and must remain a normal
+        # parent tool event.
+        return kind == "other" and "子代理：" in content
 
     @staticmethod
     def _extract_agent_task_label(tool_call: "ToolCallInfo") -> str:
@@ -686,14 +828,4 @@ class ProgrammingCardSession:
 
     @staticmethod
     def _extract_agent_tool_name(tool_call: "ToolCallInfo") -> str:
-        content = (tool_call.content or "").strip()
-        for line in content.splitlines():
-            marker = "子代理："
-            if marker in line:
-                name = line.split(marker, 1)[1].strip()
-                if name:
-                    return name[:40]
-        title = (tool_call.title or "").strip().lower()
-        if title in _AGENT_TOOL_TITLES:
-            return title
-        return "subagent"
+        return extract_agent_tool_name(tool_call)

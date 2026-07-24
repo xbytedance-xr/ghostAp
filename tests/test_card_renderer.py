@@ -1,6 +1,10 @@
 """Tests for src/card/render/renderer.py — main render entry point."""
 
 
+import json
+
+import pytest
+
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import (
     _assemble_card_json,
@@ -14,6 +18,7 @@ from src.card.state.models import (
     ContentBlock,
     FooterState,
     HeaderState,
+    TaskListBlock,
 )
 
 
@@ -65,6 +70,242 @@ class TestRenderCardBasic:
         assert "body" in card_json
         assert card_json["config"]["wide_screen_mode"] is True
         assert card_json["config"]["update_multi"] is True
+
+    def test_image_block_renders_inline_feishu_image(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="image",
+                    block_id="image:sha256-artifact",
+                    image_key="img_generated",
+                    alt="页面截图",
+                    status="completed",
+                ),
+            ),
+            header=HeaderState(title="Test", template="blue"),
+        )
+
+        body = render_card(state, RenderBudget())[0]._card_json["body"]["elements"]
+
+        assert {
+            "tag": "img",
+            "img_key": "img_generated",
+            "alt": {"tag": "plain_text", "content": "页面截图"},
+        } in body
+
+    def test_failed_image_block_renders_non_sensitive_fallback(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="image",
+                    block_id="image:sha256-artifact",
+                    alt="页面截图",
+                    status="failed",
+                ),
+            ),
+            header=HeaderState(title="Test", template="green"),
+            terminal="completed",
+        )
+
+        body = render_card(state, RenderBudget())[0]._card_json["body"]["elements"]
+
+        assert any(
+            element.get("tag") == "markdown"
+            and "图片产物暂时无法展示" in element.get("content", "")
+            for element in body
+        )
+
+    def test_tainted_image_alt_cannot_break_render_or_signature_hashing(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="image",
+                    block_id="image:tainted",
+                    image_key="img_generated",
+                    alt="screen\udcff\x00\nshot.png",
+                    status="completed",
+                ),
+            ),
+            header=HeaderState(title="Test", template="blue"),
+        )
+
+        signature = compute_structure_signature(state)
+        rendered = render_card(state, RenderBudget())[0]
+        image = next(
+            element
+            for element in rendered._card_json["body"]["elements"]
+            if element.get("tag") == "img"
+        )
+
+        assert len(signature) == 32
+        assert len(rendered.structure_signature) == 32
+        assert image["alt"]["content"] == "screen� shot.png"
+        json.dumps(rendered._card_json, ensure_ascii=False).encode("utf-8")
+
+
+class TestSubtaskCardProjection:
+    @pytest.mark.parametrize(
+        ("terminal", "status_label", "template"),
+        [
+            pytest.param("running", "执行中", "orange", id="running"),
+            pytest.param("completed", "已完成", "green", id="completed"),
+            pytest.param("failed", "执行失败", "red", id="failed"),
+        ],
+    )
+    def test_subtask_header_uses_human_label_and_terminal_style_only(
+        self,
+        terminal,
+        status_label,
+        template,
+    ):
+        state = CardState(
+            terminal=terminal,
+            header=HeaderState(title="legacy title", template="blue"),
+            metadata=CardMetadata(
+                project_name="ghostAp-internal",
+                mode_name="Deep · Codex",
+                tool_name="codex-internal",
+                model_name="gpt-internal",
+                engine_type="deep",
+                unit_kind="subagent",
+                unit_id="call_internal_123",
+                unit_label="完成独立最终代码审查",
+                card_sequence="1.e",
+                is_subagent=True,
+                parent_card_seq="1",
+            ),
+        )
+
+        header = render_card(state, RenderBudget())[0]._card_json["header"]
+
+        assert header["title"]["content"] == "🧬 子任务 · 完成独立最终代码审查"
+        assert header["subtitle"]["content"] == (
+            f"{status_label} · 子卡 #1.e · 来自主卡 #1"
+        )
+        assert header["template"] == template
+        rendered = str(header)
+        for internal_value in (
+            "call_internal_123",
+            "ghostAp-internal",
+            "codex-internal",
+            "gpt-internal",
+        ):
+            assert internal_value not in rendered
+
+    @pytest.mark.parametrize(
+        ("is_subagent", "expanded", "border_color"),
+        [
+            pytest.param(False, True, "indigo", id="parent"),
+            pytest.param(True, False, "grey", id="child"),
+        ],
+    )
+    def test_only_subtask_cards_use_compact_task_progress(
+        self,
+        is_subagent,
+        expanded,
+        border_color,
+    ):
+        task_list = TaskListBlock(
+            block_id="tasks",
+            current_task_id="t5",
+            tasks=(
+                {"task_id": "t1", "name": "探索代码", "status": "completed"},
+                {"task_id": "t2", "name": "修复路由", "status": "completed"},
+                {"task_id": "t3", "name": "单元测试", "status": "completed"},
+                {"task_id": "t4", "name": "集成测试", "status": "completed"},
+                {"task_id": "t5", "name": "最终代码审查", "status": "in_progress"},
+            ),
+        )
+        state = CardState(
+            blocks=(task_list,),
+            metadata=CardMetadata(
+                mode_name="Deep",
+                engine_type="deep",
+                unit_kind="subagent" if is_subagent else None,
+                unit_label="完成独立最终代码审查" if is_subagent else None,
+                card_sequence="1.e" if is_subagent else 1,
+                is_subagent=is_subagent,
+                parent_card_seq="1" if is_subagent else None,
+            ),
+        )
+
+        body = render_card(state, RenderBudget())[0]._card_json["body"]["elements"]
+        task_panels = [
+            element
+            for element in body
+            if element.get("tag") == "collapsible_panel"
+            and "最终代码审查" in str(element)
+        ]
+
+        assert len(task_panels) == 1
+        panel = task_panels[0]
+        assert panel["expanded"] is expanded
+        assert panel["border"]["color"] == border_color
+        if is_subagent:
+            header_content = panel["header"]["title"]["content"]
+            assert "整体 4/5" in header_content
+            assert "当前 5/5" in header_content
+            assert "✅" not in header_content
+
+    def test_subtask_compact_task_names_stay_within_card_budget(self):
+        long_name = "极长任务名称" * 5000
+        state = CardState(
+            blocks=(
+                TaskListBlock(
+                    block_id="tasks",
+                    current_task_id="t1",
+                    tasks=(
+                        {
+                            "task_id": "t1",
+                            "name": long_name,
+                            "status": "in_progress",
+                        },
+                    ),
+                ),
+            ),
+            metadata=CardMetadata(
+                engine_type="deep",
+                unit_kind="subagent",
+                unit_label="审查任务",
+                card_sequence="1.a",
+                is_subagent=True,
+                parent_card_seq="1",
+            ),
+        )
+        budget = RenderBudget()
+
+        card_json = render_card(state, budget)[0]._card_json
+        payload_size = len(
+            json.dumps(card_json, ensure_ascii=False).encode("utf-8")
+        )
+
+        assert payload_size <= budget.byte_budget
+        assert long_name not in str(card_json)
+        assert "…" in str(card_json)
+
+    @pytest.mark.parametrize("terminal", ["completed", "failed"])
+    def test_terminal_subtask_omits_running_phase_banner(self, terminal):
+        state = CardState(
+            terminal=terminal,
+            metadata=CardMetadata(
+                engine_type="deep",
+                unit_kind="subagent",
+                unit_label="审查任务",
+                card_sequence="1.a",
+                is_subagent=True,
+                parent_card_seq="1",
+            ),
+        )
+
+        body = render_card(
+            state,
+            RenderBudget(),
+        )[0]._card_json["body"]["elements"]
+
+        assert not any(
+            "Deep · 执行中" in str(element)
+            for element in body
+        )
 
 
 class TestUnifiedCardSections:
@@ -275,8 +516,8 @@ class TestUnifiedCardSections:
             if el.get("tag") == "markdown"
         )
 
-    def test_bridge_phrase_prepended_to_reasoning_collapsible_panel(self):
-        """Bridge phrase prepends into the left-aligned reasoning panel body."""
+    def test_bridge_phrase_prepended_to_execution_current_action(self):
+        """Bridge phrase prepends into the live execution action."""
         state = CardState(
             blocks=(ContentBlock(kind="reasoning", block_id="r1", content="分析中...", status="active"),),
             metadata=CardMetadata(bridge_phrase="续接："),
@@ -285,18 +526,18 @@ class TestUnifiedCardSections:
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
 
-        panels = [
+        current_rows = [
             el for el in body
-            if el.get("tag") == "collapsible_panel" and "正在分析" in str(el.get("header", {}))
+            if el.get("tag") == "column_set" and "正在分析" in str(el)
         ]
-        assert len(panels) == 1
-        markdown = panels[0]["elements"][0]
+        assert len(current_rows) == 1
+        markdown = current_rows[0]["columns"][0]["elements"][0]
         assert markdown["text_align"] == "left"
         md_content = markdown["content"]
         assert md_content.startswith("续接：")
 
-    def test_programming_card_does_not_inject_activity_summary_panel(self):
-        """Completed tools render as compact activity_digest (not full activity_summary_panel)."""
+    def test_programming_card_renders_tool_in_execution_history(self):
+        """Completed tools render in the chronological execution record."""
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -316,8 +557,8 @@ class TestUnifiedCardSections:
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
 
-        # Activity digest should appear as a compact aggregate panel.
-        assert "已探索" in str(body)
+        assert "执行记录" in str(body)
+        assert "read · src/app.py" in str(body)
         assert "正文内容" in str(body)
         assert "FULL_FILE_CONTENT_SHOULD_NOT_RENDER" not in str(body)
 
@@ -789,7 +1030,7 @@ class TestMultipleBlockTypes:
     """Rendering mixed block types."""
 
     def test_tool_block_renders_collapsible_panel(self):
-        """Completed tool renders as compact activity_digest panel."""
+        """Completed tool renders in a collapsed execution-history panel."""
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -803,7 +1044,7 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        assert any(el.get("tag") == "collapsible_panel" and "已运行" in str(el) for el in body)
+        assert any(el.get("tag") == "collapsible_panel" and "执行记录" in str(el) for el in body)
 
     def test_reasoning_block_renders(self):
         state = CardState(
@@ -818,7 +1059,7 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        assert any(el.get("tag") == "collapsible_panel" and "正在分析" in str(el) for el in body)
+        assert any(el.get("tag") == "column_set" and "正在分析" in str(el) for el in body)
 
     def test_spec_reasoning_full_mode_keeps_complete_text(self):
         long_content = "完整思考内容" * 120
@@ -879,6 +1120,7 @@ class TestMultipleBlockTypes:
                 )
                 for idx in range(80)
             ),
+            metadata=CardMetadata(mode_name="Spec", engine_type="spec"),
         )
 
         cards = render_card(state, RenderBudget(node_budget=60))
@@ -905,7 +1147,7 @@ class TestMultipleBlockTypes:
         assert len(panels) == 1
 
     def test_mixed_blocks_render_in_order(self):
-        """Text, tool, text blocks render in original order with activity_digest inline."""
+        """Running programming cards put execution history before narration."""
         state = CardState(
             blocks=(
                 ContentBlock(kind="text", block_id="t1", content="Intro"),
@@ -921,15 +1163,13 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        # 3 content elements: text + activity_digest + text (+ footer/buttons)
-        assert len(body) >= 3
-        intro_idx = next(i for i, el in enumerate(body) if el.get("content") == "Intro")
-        conclusion_idx = next(i for i, el in enumerate(body) if el.get("content") == "Conclusion")
-        digest_idx = next(
+        intro_idx = next(i for i, el in enumerate(body) if "Intro" in str(el))
+        conclusion_idx = next(i for i, el in enumerate(body) if "Conclusion" in str(el))
+        history_idx = next(
             i for i, el in enumerate(body)
-            if el.get("tag") == "collapsible_panel" and "已运行" in str(el)
+            if el.get("tag") == "collapsible_panel" and "执行记录" in str(el)
         )
-        assert intro_idx < digest_idx < conclusion_idx
+        assert history_idx < intro_idx < conclusion_idx
 
 
 class TestPagination:

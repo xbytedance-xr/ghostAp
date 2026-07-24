@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 
 from src.acp.sync_adapter import SyncACPSession
@@ -39,3 +40,18 @@ def test_close_drains_pending_loop_callbacks_before_loop_close():
     assert marker == ["pipe-close-callback"]
     assert session._loop is None
     assert not thread.is_alive()
+
+
+def test_close_cancels_and_forgets_active_prompt_future():
+    future: concurrent.futures.Future[None] = concurrent.futures.Future()
+    session = SyncACPSession.__new__(SyncACPSession)
+    session._active_future = future
+    session._acp_session = None
+    session._loop = None
+    session._watchdog_stop = threading.Event()
+    session._watchdog_thread = None
+
+    session.close()
+
+    assert future.cancelled()
+    assert session._active_future is None

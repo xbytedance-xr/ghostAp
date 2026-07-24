@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>普通编程卡片 · 过程摘要收敛预览</title>
+  <title>普通编程卡片 · 执行流预览</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -14,36 +14,50 @@
     }
     main { max-width: 980px; margin: 32px auto; padding: 0 20px 48px; }
     h1 { margin: 0 0 8px; font-size: 24px; }
-    .intro { margin: 0 0 24px; color: #646a73; }
-    .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
-    .column > h2 { margin: 0 0 10px; font-size: 16px; }
+    .intro { max-width: 760px; margin: 0 0 24px; color: #646a73; }
+    .states { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+    .state > h2 { margin: 0 0 10px; font-size: 16px; }
     .card {
       overflow: hidden;
-      padding: 16px;
       border: 1px solid #dee0e3;
       border-radius: 14px;
       background: #fff;
       box-shadow: 0 4px 18px rgba(31, 35, 41, .06);
     }
-    .panel {
-      margin-bottom: 12px;
-      padding: 12px 14px;
+    .header { padding: 14px 16px 12px; border-bottom: 1px solid #eff0f1; }
+    .header strong { display: block; font-size: 16px; }
+    .meta { margin-top: 3px; color: #8f959e; font-size: 13px; }
+    .content { padding: 14px 16px 16px; }
+    .tasks { margin-bottom: 12px; color: #646a73; font-size: 14px; }
+    .current {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #e8f3ff;
+      color: #245bdb;
+      font-weight: 620;
+    }
+    .answer { margin-bottom: 14px; }
+    .answer h3 { margin: 0 0 7px; font-size: 16px; }
+    .answer p { margin: 0; }
+    details {
       border: 1px solid #c9cdd4;
-      border-radius: 10px;
+      border-radius: 9px;
       background: #fff;
     }
-    .panel:last-child { margin-bottom: 0; }
-    .tool { border-color: #3370ff; padding: 9px 14px; }
-    .title { color: #646a73; font-weight: 650; }
-    .body { margin-top: 12px; font-size: 16px; }
-    .body p { margin: 0 0 10px; }
-    .body p:last-child { margin-bottom: 0; }
-    .body ul { margin: 0; padding-left: 22px; }
-    .body li { margin: 0 0 8px; }
-    .body li:last-child { margin-bottom: 0; }
-    .muted { color: #8f959e; }
-    .after .summary { background: #fafafa; }
-    .after .tool { margin-top: 12px; }
+    summary {
+      cursor: pointer;
+      padding: 9px 12px;
+      color: #646a73;
+      font-weight: 620;
+      list-style-position: inside;
+    }
+    .timeline { margin: 0; padding: 0 12px 11px 34px; color: #4e5969; }
+    .timeline li { margin: 6px 0; padding-left: 2px; }
+    .timeline .analysis::marker { content: "🧠  "; }
+    .timeline .tool::marker { content: "✓  "; color: #2e7d32; }
+    .timeline .command::marker { content: "⌘  "; color: #245bdb; }
+    .footer { padding: 10px 16px 13px; border-top: 1px solid #eff0f1; color: #8f959e; font-size: 13px; }
     .note {
       margin-top: 22px;
       padding: 12px 14px;
@@ -53,46 +67,69 @@
     }
     @media (max-width: 720px) {
       main { margin-top: 18px; padding-inline: 12px; }
-      .comparison { grid-template-columns: 1fr; }
+      .states { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
     }
   </style>
 </head>
 <body>
   <main>
-    <h1>普通编程卡片：过程信息收敛</h1>
-    <p class="intro">目标：保留模型提供的过程摘要与工具审计信息，但避免每次工具调用都制造一个新的“思考完成”面板。</p>
-    <section class="comparison">
-      <div class="column before">
-        <h2>现状</h2>
+    <h1>普通编程卡片：统一执行流</h1>
+    <p class="intro">模型提供的分析摘要和真实工具调用按发生顺序进入同一条执行记录。运行中只突出当前动作；完成后让最终回答成为主内容。</p>
+    <section class="states">
+      <article class="state running">
+        <h2>运行中</h2>
         <div class="card">
-          <div class="panel tool"><div class="title">▣ 1 次工具调用⌄</div></div>
-          <div class="panel"><div class="title">💭 思考完成 · 75字⌃</div><div class="body">Confirming no memory update needed<br><br>Planning slow test inspection</div></div>
-          <div class="panel tool"><div class="title">▣ 1 次工具调用⌄</div></div>
-          <div class="panel"><div class="title">💭 思考完成 · 43字⌃</div><div class="body">Assessing test fixture inefficiencies</div></div>
-          <div class="panel tool"><div class="title">▣ 1 次工具调用⌄</div></div>
-          <div class="panel"><div class="title">💭 思考完成 · 40字⌃</div><div class="body">Analyzing repository growth trends</div></div>
-        </div>
-      </div>
-      <div class="column after">
-        <h2>修复目标</h2>
-        <div class="card">
-          <div class="panel summary">
-            <div class="title">💭 过程摘要 · 158字⌃</div>
-            <div class="body">
-              <ul>
-                <li>Confirming no memory update needed</li>
-                <li>Planning slow test inspection</li>
-                <li>Assessing test fixture inefficiencies</li>
-                <li>Analyzing repository growth trends</li>
-              </ul>
-            </div>
+          <div class="header">
+            <strong>优化编程卡片执行过程</strong>
+            <div class="meta">Codex · gpt-5 · 00:18</div>
           </div>
-          <div class="panel tool"><div class="title">▣ 3 次工具调用⌄</div></div>
-          <p class="muted">最终回答继续作为卡片主内容展示。</p>
+          <div class="content">
+            <div class="tasks">当前任务：实现统一执行流</div>
+            <div class="current">⏳ 正在分析 · 校验卡片更新链路</div>
+            <details>
+              <summary>执行记录 · 3 步</summary>
+              <ol class="timeline">
+                <li class="analysis">分析 · 检查普通编程卡片的渲染顺序</li>
+                <li class="tool">Read · src/card/render/renderer.py</li>
+                <li class="command">Bash · pytest tests/test_card_renderer.py</li>
+              </ol>
+            </details>
+          </div>
+          <div class="footer">正在执行 · 最新动作始终可见</div>
         </div>
-      </div>
+      </article>
+
+      <article class="state completed">
+        <h2>已完成</h2>
+        <div class="card">
+          <div class="header">
+            <strong>优化编程卡片执行过程</strong>
+            <div class="meta">Codex · gpt-5 · 00:42</div>
+          </div>
+          <div class="content">
+            <section class="answer">
+              <h3>最终回答</h3>
+              <p>已将分析摘要和命令调用合并为按时间排列的执行流；完成后执行记录自动折叠，结论优先展示。</p>
+            </section>
+            <details>
+              <summary>执行记录 · 5 步</summary>
+              <ol class="timeline">
+                <li class="analysis">分析 · 检查普通编程卡片的渲染顺序</li>
+                <li class="tool">Read · src/card/render/renderer.py</li>
+                <li class="analysis">分析 · 确认固定摘要块破坏事件顺序</li>
+                <li class="tool">Edit · 更新执行流渲染</li>
+                <li class="command">Bash · 相关测试全部通过</li>
+              </ol>
+            </details>
+          </div>
+          <div class="footer">已完成 · 最终回答优先，过程按需展开</div>
+        </div>
+      </article>
     </section>
-    <div class="note">设计原则：过程信息是次级、可折叠内容；同一任务只占一个视觉区域。工具调用保持可审计，但按连续执行批次聚合。</div>
+    <div class="note">设计原则：协议层保持分析、正文、工具事件独立；展示层按时间组织。当前动作负责即时反馈，执行记录负责审计，最终回答负责交付。</div>
   </main>
 </body>
 </html>

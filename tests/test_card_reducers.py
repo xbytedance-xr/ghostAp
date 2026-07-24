@@ -15,6 +15,39 @@ def _base_state() -> CardState:
     return CardState(metadata=CardMetadata(engine_type="deep", project_name="Test", mode_name="Deep Agent", mode_emoji="🧠"))
 
 
+def test_image_added_creates_one_deduplicated_image_block():
+    state = reduce_card_state(
+        _base_state(),
+        CardEvent.image_added("sha256:artifact", "img_generated", "页面截图"),
+    )
+    state = reduce_card_state(
+        state,
+        CardEvent.image_added("sha256:artifact", "img_generated", "页面截图"),
+    )
+
+    images = [block for block in state.blocks if block.kind == "image"]
+    assert len(images) == 1
+    assert images[0].image_key == "img_generated"
+    assert images[0].alt == "页面截图"
+    assert images[0].status == "completed"
+
+
+def test_image_success_replaces_previous_upload_failure():
+    state = reduce_card_state(
+        _base_state(),
+        CardEvent.image_failed("sha256:artifact", "页面截图"),
+    )
+    state = reduce_card_state(
+        state,
+        CardEvent.image_added("sha256:artifact", "img_retry_ok", "页面截图"),
+    )
+
+    images = [block for block in state.blocks if block.kind == "image"]
+    assert len(images) == 1
+    assert images[0].image_key == "img_retry_ok"
+    assert images[0].status == "completed"
+
+
 class TestTextReducer:
     def test_text_started_creates_block(self):
         s = reduce_text(_base_state(), CardEvent.text_started("b1"))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
@@ -13,6 +14,62 @@ import pytest
 
 from src.acp import diagnostics as diag
 from src.acp import sync_adapter as sa
+from src.acp.models import PromptResult
+
+
+def test_send_prompt_rejects_concurrent_threads_before_replacing_active_future(
+    tmp_path: Path,
+    monkeypatch,
+):
+    session = sa.SyncACPSession(
+        agent_type="test",
+        cwd=str(tmp_path),
+        agent_cmd="test",
+    )
+    session._acp_session = SimpleNamespace(
+        prompt=lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    session._loop = object()
+    session._start_watchdog = lambda: None
+
+    first_future: concurrent.futures.Future[PromptResult] = (
+        concurrent.futures.Future()
+    )
+    submitted = threading.Event()
+    submit_calls = 0
+
+    def submit(coro, _loop):
+        nonlocal submit_calls
+        submit_calls += 1
+        coro.close()
+        submitted.set()
+        return first_future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", submit)
+    first_result: list[PromptResult] = []
+    first_error: list[BaseException] = []
+
+    def run_first() -> None:
+        try:
+            first_result.append(session.send_prompt("first", timeout=2))
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            first_error.append(exc)
+
+    thread = threading.Thread(target=run_first)
+    thread.start()
+    assert submitted.wait(timeout=1)
+
+    with pytest.raises(RuntimeError, match="already running"):
+        session.send_prompt("second", timeout=0.1)
+
+    first_future.set_result(PromptResult(stop_reason="end_turn", text="done"))
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert first_error == []
+    assert [result.text for result in first_result] == ["done"]
+    assert submit_calls == 1
+    assert session._active_future is None
 
 
 def test_expected_prompt_connection_close_does_not_warn(monkeypatch, caplog):

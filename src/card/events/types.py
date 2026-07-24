@@ -26,6 +26,8 @@ class CardEventType(str, Enum):
     TOOL_DELTA = "tool_delta"
     TOOL_DONE = "tool_done"
     TOOL_FAILED = "tool_failed"
+    IMAGE_ADDED = "image_added"
+    IMAGE_FAILED = "image_failed"
     PLAN_UPDATED = "plan_updated"
     # Meta
     TOOL_MODEL_CHANGED = "tool_model_changed"

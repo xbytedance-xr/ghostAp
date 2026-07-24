@@ -12,6 +12,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from ..acp.client import (
+    emit_referenced_changed_local_image_events,
+    snapshot_local_image_artifacts,
+)
 from ..acp.models import ACPEvent, ACPEventType, PromptResult
 from ..config import get_settings
 from ..utils.errors import get_error_detail
@@ -138,6 +142,12 @@ class SyncClaudeCLISession:
         self.last_active = time.time()
         self.message_count += 1
         self.last_query = text
+        image_snapshot = (
+            snapshot_local_image_artifacts(self._cwd)
+            if on_event is not None
+            else {}
+        )
+        media_references: list[str] = []
 
         def _build_args(resumed: bool) -> list[str]:
             args: list[str] = [self._cfg.command, "-p"]
@@ -249,20 +259,23 @@ class SyncClaudeCLISession:
         try:
             # First try: follow the normal resume/session-id flow
             rc, out, err, state = _run_once(resumed=self.is_resumed)
+            media_references.extend((out, err))
+
+            # If resume failed because local conversation doesn't exist, fall back to a fresh session once.
+            if state == "ok" and self.is_resumed and rc != 0 and _is_missing_conversation(err, out):
+                logger.info("[ClaudeCLI] resume failed (missing conversation), fallback to new session")
+                self.session_id = str(uuid.uuid4())
+                self.is_resumed = False
+                rc, out, err, state = _run_once(resumed=False)
+                media_references.extend((out, err))
 
             if state == "cancelled":
                 self.is_resumed = True
                 return PromptResult(stop_reason="cancelled", text=out)
             if state == "timeout":
                 self.is_resumed = True
-                return PromptResult(stop_reason="cancelled", text="❌ Claude 执行超时，已取消")
-
-            # If resume failed because local conversation doesn't exist, fall back to a fresh session once.
-            if self.is_resumed and rc != 0 and _is_missing_conversation(err, out):
-                logger.info("[ClaudeCLI] resume failed (missing conversation), fallback to new session")
-                self.session_id = str(uuid.uuid4())
-                self.is_resumed = False
-                rc, out, err, _ = _run_once(resumed=False)
+                timeout_text = (out + "\n❌ Claude 执行超时").strip()
+                return PromptResult(stop_reason="timeout", text=timeout_text)
 
             output = out
             if rc != 0 and err:
@@ -277,6 +290,20 @@ class SyncClaudeCLISession:
         except (subprocess.SubprocessError, OSError, TimeoutError) as e:
             self.is_resumed = True
             return PromptResult(stop_reason="error", text=f"❌ Claude 执行异常: {get_error_detail(e)}")
+        finally:
+            if on_event is not None:
+                try:
+                    emit_referenced_changed_local_image_events(
+                        self._cwd,
+                        image_snapshot,
+                        media_references,
+                        on_event,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[ClaudeCLI] local image artifact discovery failed",
+                        exc_info=True,
+                    )
 
     def send_prompt_with_retry(
         self,

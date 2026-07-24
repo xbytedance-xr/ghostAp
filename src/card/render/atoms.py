@@ -12,6 +12,7 @@ from typing import Literal
 from src.card.render.budget import RenderBudget
 from src.card.state.models import ContentBlock
 from src.card.ui_text import UI_TEXT
+from src.utils.text import sanitize_single_line_label, utf8_replace_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,8 @@ AtomKind = Literal[
     "criteria_panel", "phase_panel", "warning_banner", "progress_bar",
     "worktree_panel", "task_list", "phase_banner",
     "subagent_dispatch", "activity_digest", "review_role", "spec_plan", "spec_task",
+    "execution_current", "execution_history",
+    "image",
 ]
 
 @dataclass
@@ -44,14 +47,18 @@ def estimate_atom_size(atom: RenderAtom) -> int:
     Otherwise, estimate from content length * 3 + overhead.
     """
     if atom.elements:
-        return len(json.dumps(atom.elements).encode("utf-8"))
+        return len(utf8_replace_bytes(json.dumps(atom.elements)))
     # Estimate: content bytes + structural overhead
     overhead = 100  # JSON object structure overhead
-    return len(atom.content.encode("utf-8")) * 3 + overhead
+    return len(utf8_replace_bytes(atom.content)) * 3 + overhead
 
 
 def flatten_to_atoms(
-    blocks: tuple[ContentBlock, ...], budget: RenderBudget
+    blocks: tuple[ContentBlock, ...],
+    budget: RenderBudget,
+    *,
+    unified_execution: bool = False,
+    terminal: bool = False,
 ) -> list[RenderAtom]:
     """Convert ContentBlocks into a flat list of RenderAtoms.
 
@@ -67,6 +74,38 @@ def flatten_to_atoms(
     pending_tools: list[ContentBlock] = []
     handlers = _get_block_kind_handlers()
     current_task_name = _extract_current_task_name(blocks)
+    process_blocks = [
+        block for block in blocks if block.kind in {"reasoning", "tool_call"}
+    ] if unified_execution else []
+    process_inserted = False
+
+    def _append_execution_flow() -> None:
+        """Append one current-action row and one chronological history panel."""
+        from src.card.render.execution_flow import render_execution_flow
+
+        flow = render_execution_flow(process_blocks, terminal=terminal)
+        if flow.current_element is not None:
+            current_atom = RenderAtom(
+                kind="execution_current",
+                block_id="_execution_current",
+                content=flow.current_text,
+                elements=[flow.current_element],
+                splittable=False,
+                node_count=3,
+            )
+            current_atom.byte_size = estimate_atom_size(current_atom)
+            atoms.append(current_atom)
+        if flow.history_element is not None:
+            history_atom = RenderAtom(
+                kind="execution_history",
+                block_id="_execution_history",
+                content=flow.history_text,
+                elements=[flow.history_element],
+                splittable=False,
+                node_count=4,
+            )
+            history_atom.byte_size = estimate_atom_size(history_atom)
+            atoms.append(history_atom)
 
     def _flush_pending() -> None:
         """Flush accumulated completed/failed tools as a single activity_digest atom."""
@@ -92,7 +131,12 @@ def flatten_to_atoms(
     while i < n:
         block = blocks[i]
 
-        if block.kind == "tool_call":
+        if unified_execution and block.kind in {"reasoning", "tool_call"}:
+            if not process_inserted:
+                _append_execution_flow()
+                process_inserted = True
+            i += 1
+        elif block.kind == "tool_call":
             if block.status == "active":
                 # Flush any pending completed tools first
                 _flush_pending()
@@ -184,6 +228,36 @@ def _block_to_text_atom(block: ContentBlock) -> RenderAtom:
     atom = RenderAtom(
         kind="text", block_id=block.block_id, content=block.content,
         splittable=True, node_count=1,
+    )
+    atom.byte_size = estimate_atom_size(atom)
+    return atom
+
+
+def _block_to_image_atom(block: ContentBlock) -> RenderAtom:
+    image_key = str(getattr(block, "image_key", "") or "")
+    alt = sanitize_single_line_label(
+        getattr(block, "alt", ""),
+        fallback="任务图片",
+        max_chars=120,
+    )
+    if image_key and block.status != "failed":
+        element = {
+            "tag": "img",
+            "img_key": image_key,
+            "alt": {"tag": "plain_text", "content": alt},
+        }
+    else:
+        element = {
+            "tag": "markdown",
+            "content": "🖼️ 图片产物暂时无法展示；文本结果与本地文件不受影响。",
+            "text_size": "notation",
+        }
+    atom = RenderAtom(
+        kind="image",
+        elements=[element],
+        block_id=block.block_id,
+        splittable=False,
+        node_count=2 if image_key else 1,
     )
     atom.byte_size = estimate_atom_size(atom)
     return atom
@@ -370,6 +444,7 @@ def _block_to_separator_atom(block: ContentBlock) -> RenderAtom:
 
 _ATOM_HANDLER_DISPATCH: dict[str, Callable[[ContentBlock], RenderAtom]] = {
     "text": _block_to_text_atom,
+    "image": _block_to_image_atom,
     "reasoning": _block_to_reasoning_atom,
     "plan": _block_to_plan_atom,
     "criteria": _block_to_criteria_atom,

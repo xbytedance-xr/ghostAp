@@ -139,6 +139,67 @@ class TestSyncClaudeCLISession:
         assert all(e.event_type == ACPEventType.TEXT_CHUNK for e in events)
         assert sess.message_count == 1
 
+    def test_send_prompt_emits_new_local_image_before_return(self, tmp_path):
+        sess = SyncClaudeCLISession(cwd=str(tmp_path))
+        sess.session_id = "test-id"
+        generated = tmp_path / "screenshots" / "claude.png"
+
+        class CreatingStdout:
+            def __iter__(self):
+                generated.parent.mkdir()
+                generated.write_bytes(b"\x89PNG\r\n\x1a\nclaude")
+                yield "created `screenshots/claude.png`\n"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = CreatingStdout()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.poll.return_value = 0
+        events: list[ACPEvent] = []
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("src.utils.env.build_clean_env", return_value={}),
+        ):
+            result = sess.send_prompt("take screenshot", on_event=events.append)
+
+        assert result.stop_reason == "end_turn"
+        assert events[-1].event_type == ACPEventType.IMAGE_CHUNK
+        assert events[-1].image is not None
+        assert events[-1].image.source_uri == str(generated)
+
+    def test_send_prompt_does_not_emit_unreferenced_new_local_image(
+        self,
+        tmp_path,
+    ):
+        sess = SyncClaudeCLISession(cwd=str(tmp_path))
+        sess.session_id = "test-id"
+        generated = tmp_path / "private.png"
+
+        class CreatingStdout:
+            def __iter__(self):
+                generated.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+                yield "done\n"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = CreatingStdout()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.poll.return_value = 0
+        events: list[ACPEvent] = []
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("src.utils.env.build_clean_env", return_value={}),
+        ):
+            sess.send_prompt("work", on_event=events.append)
+
+        assert [event.event_type for event in events] == [
+            ACPEventType.TEXT_CHUNK,
+        ]
+
 
 # ── SyncClaudeCLISession: argument injection guard ───────────────────
 
@@ -247,6 +308,77 @@ class TestSyncTTADKCLISession:
         sess.cancel()
         assert sess._cancel_event.is_set()
         mock_proc.terminate.assert_called_once()
+
+    def test_send_prompt_emits_new_local_image_before_return(self, tmp_path):
+        sess = SyncTTADKCLISession(agent_type="ttadk_coco", cwd=str(tmp_path))
+        sess.session_id = "test-id"
+        generated = tmp_path / "screenshots" / "ttadk.webp"
+
+        class CreatingStdout:
+            def __iter__(self):
+                generated.parent.mkdir()
+                generated.write_bytes(b"RIFF\x08\x00\x00\x00WEBPttadk")
+                yield "created `screenshots/ttadk.webp`\n"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = CreatingStdout()
+        mock_proc.stderr = []
+        mock_proc.returncode = 0
+        mock_proc.poll.return_value = 0
+        events: list[ACPEvent] = []
+
+        with (
+            patch("src.agent_session.ttadk_cli.subprocess.Popen", return_value=mock_proc),
+            patch(
+                "src.agent_session.ttadk_cli.build_ttadk_subprocess_env",
+                return_value=({}, None),
+            ),
+        ):
+            result = sess.send_prompt("take screenshot", on_event=events.append)
+
+        assert result.stop_reason == "end_turn"
+        assert events[-1].event_type == ACPEventType.IMAGE_CHUNK
+        assert events[-1].image is not None
+        assert events[-1].image.source_uri == str(generated)
+
+    def test_send_prompt_does_not_emit_unreferenced_new_local_image(
+        self,
+        tmp_path,
+    ):
+        sess = SyncTTADKCLISession(
+            agent_type="ttadk_coco",
+            cwd=str(tmp_path),
+        )
+        sess.session_id = "test-id"
+        generated = tmp_path / "private.png"
+
+        class CreatingStdout:
+            def __iter__(self):
+                generated.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+                yield "done\n"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = CreatingStdout()
+        mock_proc.stderr = []
+        mock_proc.returncode = 0
+        mock_proc.poll.return_value = 0
+        events: list[ACPEvent] = []
+
+        with (
+            patch(
+                "src.agent_session.ttadk_cli.subprocess.Popen",
+                return_value=mock_proc,
+            ),
+            patch(
+                "src.agent_session.ttadk_cli.build_ttadk_subprocess_env",
+                return_value=({}, None),
+            ),
+        ):
+            sess.send_prompt("work", on_event=events.append)
+
+        assert [event.event_type for event in events] == [
+            ACPEventType.TEXT_CHUNK,
+        ]
 
 
 # ── Helper functions ─────────────────────────────────────────────────

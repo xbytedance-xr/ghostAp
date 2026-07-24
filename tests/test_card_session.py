@@ -1663,6 +1663,8 @@ class TestAtomRendererRegistry:
             "progress_bar", "worktree_panel", "task_list",
             "phase_banner", "subagent_dispatch", "activity_digest",
             "review_role", "spec_plan", "spec_task",
+            "execution_current", "execution_history",
+            "image",
         }
         assert expected_kinds == set(_ATOM_RENDERERS.keys())
 

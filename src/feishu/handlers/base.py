@@ -8,6 +8,7 @@ duplicating the underlying Feishu API calls.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -92,6 +93,35 @@ class BaseHandler:
     def get_manager(self, key: str) -> Optional["ACPSessionManager"]:
         """Get a manager from the registry."""
         return self.ctx.managers.get(key)
+
+    def upload_acp_image(self, image) -> str | None:
+        """Validate and upload a typed ACP image without logging its payload."""
+        from ...acp.client import (
+            MAX_ACP_IMAGE_BYTES,
+            SUPPORTED_ACP_IMAGE_MIME_TYPES,
+            detect_acp_image_mime,
+        )
+
+        try:
+            mime_type = str(image.mime_type or "").strip().casefold()
+            if mime_type not in SUPPORTED_ACP_IMAGE_MIME_TYPES:
+                raise ValueError("Unsupported ACP image MIME type")
+            compact = "".join(str(image.data or "").split())
+            max_encoded_chars = ((MAX_ACP_IMAGE_BYTES + 2) // 3) * 4
+            if not compact or len(compact) > max_encoded_chars:
+                raise ValueError("ACP image encoding is empty or too large")
+            payload = base64.b64decode(compact, validate=True)
+            if not payload or len(payload) > MAX_ACP_IMAGE_BYTES:
+                raise ValueError("ACP image payload is empty or too large")
+            if detect_acp_image_mime(payload) != mime_type:
+                raise ValueError("ACP image bytes do not match MIME type")
+            return self.im_client.upload_image_bytes(payload)
+        except Exception as exc:
+            logger.warning(
+                "ACP 图片产物上传失败: %s",
+                type(exc).__name__,
+            )
+            return None
 
     def send_error_card(
         self,
@@ -785,8 +815,22 @@ class BaseHandler:
     def _release_repo_lock(self, root_path, chat_id, repo_lock_mgr=None):
         return self.lock_helper._release_repo_lock(root_path, chat_id, repo_lock_mgr)
 
-    def send_lock_conflict_card(self, e: "LockConflictError", message_id: str, command_text: str, *, retry_count: int = 0):
-        return self.lock_helper.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
+    def send_lock_conflict_card(
+        self,
+        e: "LockConflictError",
+        message_id: str,
+        command_text: str,
+        *,
+        retry_count: int = 0,
+        chat_id: str = "",
+    ):
+        return self.lock_helper.send_lock_conflict_card(
+            e,
+            message_id,
+            command_text,
+            retry_count=retry_count,
+            chat_id=chat_id,
+        )
 
     def _collect_lock_conflict_context(self, e):
         return self.lock_helper._collect_lock_conflict_context(e)

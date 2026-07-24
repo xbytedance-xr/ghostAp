@@ -1,18 +1,660 @@
 """Tests for acp.client — GhostAPClient event handling."""
 
 import asyncio
+import base64
 import logging
+import os
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from acp.schema import EnvVariable
+from acp.schema import (
+    AgentMessageChunk,
+    ContentToolCallContent,
+    EnvVariable,
+    ImageContentBlock,
+    ResourceContentBlock,
+    TextContentBlock,
+    ToolCallLocation,
+    ToolCallProgress,
+)
 
+import src.acp.client as acp_client
 from src.acp.client import ACPHistoryStore, GhostAPClient, _parse_plan, _parse_tool_call
 from src.acp.models import ACPEvent
 from src.acp.sync_adapter import resolve_agent_spec
 from src.sandbox.executor import SandboxExecutor
+
+_ONE_PIXEL_PNG = base64.b64encode(
+    b"\x89PNG\r\n\x1a\n" + b"ghostap-image"
+).decode("ascii")
+
+
+def test_agent_image_chunk_emits_typed_acp_image_event(tmp_path: Path):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    update = AgentMessageChunk(
+        session_update="agent_message_chunk",
+        content=ImageContentBlock(
+            type="image",
+            data=_ONE_PIXEL_PNG,
+            mime_type="image/png",
+        ),
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert len(events) == 1
+    assert events[0].event_type.value == "image_chunk"
+    assert events[0].image is not None
+    assert events[0].image.mime_type == "image/png"
+    assert events[0].image.data == _ONE_PIXEL_PNG
+    assert events[0].image.image_id.startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("payload", "mime_type"),
+    [
+        (b"plain text pretending to be a png", "image/png"),
+        (b"\x89PNG\r\n", "image/png"),
+        (b"\x89PNG\r\n\x1a\npayload", "image/jpeg"),
+    ],
+)
+def test_agent_image_rejects_spoofed_or_truncated_raster_bytes(
+    tmp_path: Path,
+    payload: bytes,
+    mime_type: str,
+):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    update = AgentMessageChunk(
+        session_update="agent_message_chunk",
+        content=ImageContentBlock(
+            type="image",
+            data=base64.b64encode(payload).decode("ascii"),
+            mime_type=mime_type,
+        ),
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert events == []
+
+
+def test_tool_content_image_emits_before_tool_completion(tmp_path: Path):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="imagegen-1",
+        title="imagegen",
+        kind="other",
+        status="completed",
+        content=[
+            ContentToolCallContent(
+                type="content",
+                content=ImageContentBlock(
+                    type="image",
+                    data=_ONE_PIXEL_PNG,
+                    mime_type="image/png",
+                    uri="file:///workspace/generated.png",
+                ),
+            )
+        ],
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == [
+        "image_chunk",
+        "tool_call_done",
+    ]
+    assert events[0].image is not None
+    assert events[0].image.name == "generated.png"
+
+
+def test_completed_tool_image_location_emits_live_image_event(tmp_path: Path):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    snapshot = client.snapshot_local_images()
+    image_path = tmp_path / "screenshots" / "desktop.png"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nlocation")
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="screenshot-1",
+        title="Take screenshot",
+        kind="execute",
+        status="completed",
+        locations=[ToolCallLocation(path="screenshots/desktop.png")],
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == [
+        "image_chunk",
+        "tool_call_done",
+    ]
+    assert events[0].image is not None
+    assert events[0].image.source_uri == str(image_path)
+    client.release_local_image_snapshot(snapshot)
+
+
+def test_completed_tool_raw_output_image_path_emits_live_image_event(tmp_path: Path):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    snapshot = client.snapshot_local_images()
+    image_path = tmp_path / "artifacts" / "mobile.webp"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"RIFF\x08\x00\x00\x00WEBPpayload")
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="browser-1",
+        title="Browser screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": "Screenshot saved to `artifacts/mobile.webp`"},
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == [
+        "image_chunk",
+        "tool_call_done",
+    ]
+    assert events[0].image is not None
+    assert events[0].image.name == "mobile.webp"
+    client.release_local_image_snapshot(snapshot)
+
+
+def test_completed_tool_does_not_publish_preexisting_referenced_private_image(
+    tmp_path: Path,
+):
+    private = tmp_path / "private.png"
+    private.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    snapshot = client.snapshot_local_images()
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="browser-private",
+        title="Browser screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": "Screenshot saved to `private.png`"},
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == ["tool_call_done"]
+    client.release_local_image_snapshot(snapshot)
+
+
+def test_incomplete_prompt_baseline_fails_closed_for_local_path(
+    tmp_path: Path,
+):
+    private = tmp_path / "private.png"
+    private.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+    snapshot = acp_client.snapshot_local_image_artifacts(str(tmp_path))
+    snapshot.files.pop(str(private))
+    snapshot.complete = False
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="incomplete-baseline",
+        title="Browser screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": "Screenshot saved to `private.png`"},
+    )
+
+    assert acp_client._tool_call_images(
+        update,
+        root_dir=str(tmp_path),
+        image_snapshot=snapshot,
+    ) == []
+    acp_client.release_local_image_artifact_snapshot(snapshot)
+
+
+def test_skipped_baseline_directory_cannot_publish_preexisting_local_image(
+    tmp_path: Path,
+):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    private = git_dir / "private.png"
+    private.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+    snapshot = acp_client.snapshot_local_image_artifacts(str(tmp_path))
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="skipped-baseline",
+        title="Browser screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": "Screenshot saved to `.git/private.png`"},
+    )
+
+    assert acp_client._tool_call_images(
+        update,
+        root_dir=str(tmp_path),
+        image_snapshot=snapshot,
+    ) == []
+    acp_client.release_local_image_artifact_snapshot(snapshot)
+
+
+def test_read_tool_location_does_not_publish_existing_input_image(tmp_path: Path):
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="read-1",
+        title="Read image",
+        kind="read",
+        status="completed",
+        locations=[ToolCallLocation(path="reference.png")],
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == ["tool_call_done"]
+
+
+@pytest.mark.parametrize("content_kind", ["image", "resource", "text"])
+def test_read_tool_content_does_not_publish_existing_input_image(
+    tmp_path: Path,
+    content_kind: str,
+):
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+    if content_kind == "image":
+        content = ImageContentBlock(
+            type="image",
+            data=_ONE_PIXEL_PNG,
+            mime_type="image/png",
+            uri=str(image_path),
+        )
+    elif content_kind == "resource":
+        content = ResourceContentBlock(
+            type="resource_link",
+            uri="reference.png",
+            name="reference.png",
+            mime_type="image/png",
+        )
+    else:
+        content = TextContentBlock(
+            type="text",
+            text="Input image: `reference.png`",
+        )
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id=f"read-content-{content_kind}",
+        title="Read image",
+        kind="read",
+        status="completed",
+        content=[
+            ContentToolCallContent(
+                type="content",
+                content=content,
+            )
+        ],
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == ["tool_call_done"]
+
+
+def test_local_image_resource_is_limited_to_acp_project_root(tmp_path: Path):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    snapshot = client.snapshot_local_images()
+    image_path = tmp_path / "screenshots" / "page.png"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nlocal")
+    update = AgentMessageChunk(
+        session_update="agent_message_chunk",
+        content=ResourceContentBlock(
+            type="resource_link",
+            uri="screenshots/page.png",
+            name="page.png",
+            mime_type="image/png",
+        ),
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert len(events) == 1
+    assert events[0].image is not None
+    assert events[0].image.name == "page.png"
+    assert events[0].image.source_uri == str(image_path)
+    client.release_local_image_snapshot(snapshot)
+
+
+def test_remote_image_resource_is_not_fetched(tmp_path: Path):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    update = AgentMessageChunk(
+        session_update="agent_message_chunk",
+        content=ResourceContentBlock(
+            type="resource_link",
+            uri="https://example.invalid/private.png",
+            name="private.png",
+            mime_type="image/png",
+        ),
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert events == []
+
+
+def test_typed_local_resource_with_untracked_suffix_fails_closed(
+    tmp_path: Path,
+):
+    private = tmp_path / "private.bin"
+    private.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    snapshot = client.snapshot_local_images()
+    update = AgentMessageChunk(
+        session_update="agent_message_chunk",
+        content=ResourceContentBlock(
+            type="resource_link",
+            uri="private.bin",
+            name="private.bin",
+            mime_type="image/png",
+        ),
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert events == []
+    client.release_local_image_snapshot(snapshot)
+
+
+def test_local_image_read_rejects_file_swapped_to_symlink_after_resolution(
+    tmp_path: Path,
+    monkeypatch,
+):
+    root = tmp_path / "root"
+    root.mkdir()
+    inside = root / "inside.png"
+    outside = tmp_path / "outside.png"
+    inside.write_bytes(b"\x89PNG\r\n\x1a\ninside")
+    outside.write_bytes(b"\x89PNG\r\n\x1a\noutside")
+    original_resolve = acp_client._safe_resolve_path
+
+    def resolve_then_swap(root_dir: str, user_path: str):
+        resolved = original_resolve(root_dir, user_path)
+        resolved.unlink()
+        resolved.symlink_to(outside)
+        return resolved
+
+    monkeypatch.setattr(
+        acp_client,
+        "_safe_resolve_path",
+        resolve_then_swap,
+    )
+
+    image = acp_client._read_local_image_resource(
+        root_dir=str(root),
+        uri="inside.png",
+        mime_type="image/png",
+        name=None,
+    )
+
+    assert image is None
+
+
+def test_image_scan_stops_iterating_at_entry_budget(
+    tmp_path: Path,
+    monkeypatch,
+):
+    inspected = 0
+
+    class FakeEntry:
+        name = "not-an-image"
+        path = str(tmp_path / name)
+
+        def is_dir(self, *, follow_symlinks=True):
+            return False
+
+        def is_file(self, *, follow_symlinks=True):
+            return False
+
+    class FakeScandir:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            nonlocal inspected
+            for _ in range(acp_client._MAX_IMAGE_SCAN_ENTRIES + 500):
+                inspected += 1
+                yield FakeEntry()
+
+    monkeypatch.setattr(acp_client.os, "scandir", lambda _path: FakeScandir())
+
+    assert acp_client._iter_local_image_files(str(tmp_path)) == []
+    assert inspected <= acp_client._MAX_IMAGE_SCAN_ENTRIES + 1
+
+
+def test_overlapping_prompt_scans_do_not_cross_publish_images(
+    tmp_path: Path,
+):
+    """Ambiguous same-root writes must not be attributed to either prompt."""
+    first_snapshot = acp_client.snapshot_local_image_artifacts(str(tmp_path))
+    second_snapshot = acp_client.snapshot_local_image_artifacts(str(tmp_path))
+    secret = tmp_path / "other-chat-secret.png"
+    secret.write_bytes(b"\x89PNG\r\n\x1a\nother-chat")
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="ambiguous",
+        title="Take screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": f"saved `{secret}`"},
+    )
+
+    assert acp_client._tool_call_images(
+        update,
+        root_dir=str(tmp_path),
+        image_snapshot=first_snapshot,
+    ) == []
+    assert acp_client._tool_call_images(
+        update,
+        root_dir=str(tmp_path),
+        image_snapshot=second_snapshot,
+    ) == []
+    acp_client.release_local_image_artifact_snapshot(first_snapshot)
+    acp_client.release_local_image_artifact_snapshot(second_snapshot)
+
+    isolated_snapshot = acp_client.snapshot_local_image_artifacts(str(tmp_path))
+    own_image = tmp_path / "own-result.png"
+    own_image.write_bytes(b"\x89PNG\r\n\x1a\nown-result")
+    isolated_update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="isolated",
+        title="Take screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": f"saved `{own_image}`"},
+    )
+
+    images = acp_client._tool_call_images(
+        isolated_update,
+        root_dir=str(tmp_path),
+        image_snapshot=isolated_snapshot,
+    )
+    acp_client.release_local_image_artifact_snapshot(isolated_snapshot)
+    assert len(images) == 1
+    assert images[0].source_uri == str(own_image)
+
+
+def test_parent_and_child_root_snapshots_fail_closed_for_shared_image(
+    tmp_path: Path,
+):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    parent_snapshot = acp_client.snapshot_local_image_artifacts(str(tmp_path))
+    child_snapshot = acp_client.snapshot_local_image_artifacts(str(nested))
+    shared = nested / "shared.png"
+    shared.write_bytes(b"\x89PNG\r\n\x1a\nshared")
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="shared-root",
+        title="Take screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": f"saved `{shared}`"},
+    )
+
+    assert acp_client._tool_call_images(
+        update,
+        root_dir=str(tmp_path),
+        image_snapshot=parent_snapshot,
+    ) == []
+    assert acp_client._tool_call_images(
+        update,
+        root_dir=str(nested),
+        image_snapshot=child_snapshot,
+    ) == []
+    acp_client.release_local_image_artifact_snapshot(parent_snapshot)
+    acp_client.release_local_image_artifact_snapshot(child_snapshot)
+
+
+def test_local_surrogateescape_filename_is_sanitized_before_image_event(
+    tmp_path: Path,
+):
+    events: list[ACPEvent] = []
+    client = GhostAPClient(on_event=events.append, root_dir=str(tmp_path))
+    snapshot = client.snapshot_local_images()
+    raw_path = os.fsencode(tmp_path) + b"/screen_\xff.png"
+    with open(raw_path, "wb") as image_file:
+        image_file.write(b"\x89PNG\r\n\x1a\nsurrogate-name")
+    display_path = os.fsdecode(raw_path)
+    update = ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id="surrogate-name",
+        title="Take screenshot",
+        kind="execute",
+        status="completed",
+        raw_output={"output": f"saved `{display_path}`"},
+    )
+
+    asyncio.run(client.session_update("session-image", update))
+
+    assert [event.event_type.value for event in events] == [
+        "image_chunk",
+        "tool_call_done",
+    ]
+    assert events[0].image is not None
+    events[0].image.name.encode("utf-8")
+    assert "\udcff" not in events[0].image.name
+    assert events[0].image.name == "screen_�.png"
+    client.release_local_image_snapshot(snapshot)
+
+
+def test_prompt_does_not_emit_unreported_new_image(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from src.acp.session import ACPSession
+
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"\x89PNG\r\n\x1a\nexisting")
+    generated = tmp_path / "screenshots" / "final.png"
+
+    class FakeConn:
+        async def prompt(self, **_kwargs):
+            generated.parent.mkdir()
+            generated.write_bytes(b"\x89PNG\r\n\x1a\ngenerated")
+            return SimpleNamespace(stop_reason="end_turn")
+
+    events: list[ACPEvent] = []
+    session = ACPSession(agent_cmd="test", agent_args=[], cwd=str(tmp_path))
+    session._conn = FakeConn()
+    session._session_id = "session-image"
+    session._client = GhostAPClient(
+        on_event=session._dispatch_event,
+        root_dir=str(tmp_path),
+    )
+
+    result = asyncio.run(session.prompt("generate a screenshot", on_event=events.append))
+
+    assert result.stop_reason == "end_turn"
+    image_events = [event for event in events if event.event_type.value == "image_chunk"]
+    assert image_events == []
+
+
+def test_prompt_drains_late_image_update_even_after_text(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from src.acp.models import ACPEventType, ACPImageInfo
+    from src.acp.session import ACPSession
+
+    image = ACPImageInfo(
+        image_id="sha256:late",
+        mime_type="image/png",
+        data=_ONE_PIXEL_PNG,
+        name="late.png",
+    )
+    session = ACPSession(agent_cmd="test", agent_args=[], cwd=str(tmp_path))
+
+    class FakeConn:
+        async def prompt(self, **_kwargs):
+            session._dispatch_event(
+                ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="done")
+            )
+            asyncio.get_running_loop().call_later(
+                0.01,
+                session._dispatch_event,
+                ACPEvent(event_type=ACPEventType.IMAGE_CHUNK, image=image),
+            )
+            return SimpleNamespace(stop_reason="end_turn")
+
+    events: list[ACPEvent] = []
+    session._conn = FakeConn()
+    session._session_id = "session-image"
+    session._client = GhostAPClient(
+        on_event=session._dispatch_event,
+        root_dir=str(tmp_path),
+    )
+
+    asyncio.run(session.prompt("generate", on_event=events.append))
+
+    assert [event.event_type for event in events] == [
+        ACPEventType.TEXT_CHUNK,
+        ACPEventType.IMAGE_CHUNK,
+    ]
+
+
+def test_prompt_preserves_empty_stop_reason_for_fail_closed_classification(
+    tmp_path: Path,
+):
+    from types import SimpleNamespace
+
+    from src.acp.outcome import PromptOutcome, classify_prompt_result
+    from src.acp.session import ACPSession
+
+    class FakeConn:
+        async def prompt(self, **_kwargs):
+            return SimpleNamespace(stop_reason="")
+
+    session = ACPSession(agent_cmd="test", agent_args=[], cwd=str(tmp_path))
+    session._conn = FakeConn()
+    session._session_id = "session-empty-stop"
+
+    result = asyncio.run(session.prompt("run"))
+    assessment = classify_prompt_result(result)
+
+    assert result.stop_reason == ""
+    assert assessment.outcome is PromptOutcome.INCOMPLETE
+    assert assessment.stop_reason == "missing_stop_reason"
 
 
 def test_acp_manager_retries_start_failure(monkeypatch, caplog):

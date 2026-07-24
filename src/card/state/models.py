@@ -159,6 +159,19 @@ class ReasoningBlock:
 
 
 @dataclass(frozen=True)
+class ImageBlock:
+    """Image artifact uploaded to Feishu or its non-fatal fallback."""
+    _atom_kind: ClassVar[str] = "image"
+    kind: Literal["image"] = "image"
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "completed"
+    image_key: str | None = None
+    alt: str = "任务图片"
+
+
+@dataclass(frozen=True)
 class PlanBlock:
     """Plan content block."""
     _atom_kind: ClassVar[str] = "plan"
@@ -359,7 +372,7 @@ class SpecTaskBlock:
 
 # Tagged-union type alias
 AnyContentBlock: TypeAlias = Union[
-    TextBlock, ToolBlock, ReasoningBlock, PlanBlock, PhaseBlock, CriteriaBlock,
+    TextBlock, ToolBlock, ReasoningBlock, ImageBlock, PlanBlock, PhaseBlock, CriteriaBlock,
     WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
     WorktreeMergeBlock, WorktreeCleanupBlock, TaskListBlock, SeparatorBlock,
     ReviewRoleBlock, SpecPlanBlock, SpecTaskBlock,
@@ -371,6 +384,7 @@ _BLOCK_KIND_MAP: dict[str, type] = {
     "text": TextBlock,
     "tool_call": ToolBlock,
     "reasoning": ReasoningBlock,
+    "image": ImageBlock,
     "plan": PlanBlock,
     "phase": PhaseBlock,
     "criteria": CriteriaBlock,

@@ -13,6 +13,10 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Callable, Optional
 
+from ..acp.client import (
+    emit_referenced_changed_local_image_events,
+    snapshot_local_image_artifacts,
+)
 from ..acp.models import ACPEvent, ACPEventType, PromptResult
 from ..ttadk.env_sandbox import build_ttadk_subprocess_env, resolve_ttadk_executable
 from ..utils.errors import get_error_detail
@@ -156,6 +160,11 @@ class SyncTTADKCLISession:
         self.last_active = time.time()
         self.message_count += 1
         self.last_query = text
+        image_snapshot = (
+            snapshot_local_image_artifacts(self._cwd)
+            if on_event is not None
+            else {}
+        )
 
         cmd = ["ttadk", "code", "-t", self._tool_name]
         if self._model_name:
@@ -219,10 +228,44 @@ class SyncTTADKCLISession:
             stderr_thread.start()
 
             deadline = (time.monotonic() + timeout) if timeout else None
+            terminated_reason: list[str] = []
+            proc_ref = self._proc
+
+            def _watchdog() -> None:
+                while True:
+                    try:
+                        if proc_ref.poll() is not None:
+                            return
+                    except Exception:
+                        return
+                    if self._cancel_event.is_set():
+                        terminated_reason.append("cancelled")
+                        try:
+                            proc_ref.terminate()
+                        except Exception:
+                            logger.debug("[TTADK:CLI] cancel terminate failed", exc_info=True)
+                        return
+                    now = time.monotonic()
+                    if deadline and now >= deadline:
+                        terminated_reason.append("timeout")
+                        try:
+                            proc_ref.terminate()
+                        except Exception:
+                            logger.debug("[TTADK:CLI] timeout terminate failed", exc_info=True)
+                        return
+                    wait_timeout = 0.1
+                    if deadline:
+                        wait_timeout = min(wait_timeout, max(0.0, deadline - now))
+                    self._cancel_event.wait(timeout=wait_timeout)
+
+            watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+            watchdog_thread.start()
 
             # Read stdout line by line for streaming
             if self._proc.stdout:
                 for line in self._proc.stdout:
+                    if terminated_reason:
+                        break
                     if self._cancel_event.is_set():
                         self._proc.terminate()
                         self._proc.wait(timeout=5)
@@ -264,6 +307,16 @@ class SyncTTADKCLISession:
 
             self._proc.wait(timeout=30)
             stderr_thread.join(timeout=1)
+            watchdog_thread.join(timeout=1)
+
+            if terminated_reason:
+                current = "".join(json_chunks if json_mode else (visible_chunks or raw_chunks))
+                if terminated_reason[0] == "cancelled":
+                    return PromptResult(stop_reason="cancelled", text=current)
+                return PromptResult(
+                    stop_reason="timeout",
+                    text=(current + "\n❌ TTADK 执行超时").strip(),
+                )
 
             rc = int(self._proc.returncode or 0)
             err = _strip_ansi("".join(stderr_chunks).strip())
@@ -304,6 +357,24 @@ class SyncTTADKCLISession:
                         proc.wait(timeout=3)
                     except Exception:
                         logger.debug("Failed to kill TTADK subprocess", exc_info=True)
+            if on_event is not None:
+                try:
+                    emit_referenced_changed_local_image_events(
+                        self._cwd,
+                        image_snapshot,
+                        (
+                            raw_chunks,
+                            visible_chunks,
+                            json_chunks,
+                            stderr_chunks,
+                        ),
+                        on_event,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[TTADK:CLI] local image artifact discovery failed",
+                        exc_info=True,
+                    )
 
     def send_prompt_with_retry(
         self,

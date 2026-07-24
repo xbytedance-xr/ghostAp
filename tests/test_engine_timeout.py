@@ -92,7 +92,7 @@ class TestDeepEngineTimeout:
         assert len(warning_records) >= 1
 
     def test_drain_pending_context_timeout(self, deep_engine, caplog):
-        """_drain_pending_context: TimeoutError → WARNING log, returns gracefully."""
+        """A timed-out follow-up fails closed and keeps its pending guidance."""
         deep_engine._run_state = EngineRunState.RUNNING
         deep_engine._session = _TimeoutSession()
         deep_engine._pending_context = ["extra context"]
@@ -102,8 +102,8 @@ class TestDeepEngineTimeout:
             on_event=lambda e: None, timeout=10, last_result=last,
         )
 
-        # Should return the original last_result (drain failed, no update)
-        assert result is last
+        assert result.stop_reason == "pending_context_timeout"
+        assert deep_engine._pending_context == ["extra context"]
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "超时" in r.message]
         assert len(warning_records) >= 1
 

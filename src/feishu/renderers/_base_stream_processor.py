@@ -46,7 +46,12 @@ class BaseStreamProcessor:
         self._message_id = message_id
         self._chat_id = chat_id
         self._acp_renderer = ACPEventRenderer()
-        self._stream_bridge = ACPStreamBridge(rotator)
+        image_uploader = getattr(renderer.handler, "upload_acp_image", None)
+        self._image_uploader = image_uploader if callable(image_uploader) else None
+        self._stream_bridge = ACPStreamBridge(
+            rotator,
+            image_uploader=self._image_uploader,
+        )
         self._started_dispatched = False
         self._start_time = time.time()
 

@@ -67,6 +67,7 @@ class DeepProject:
     def complete(self):
         self.status = DeepProjectStatus.COMPLETED
         self.completed_at = time.time()
+        self.error = None
 
     def fail(self, error: str):
         self.status = DeepProjectStatus.FAILED

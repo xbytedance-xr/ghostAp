@@ -80,6 +80,16 @@ class TestDeepEngine:
         assert engine.project is None
         assert not engine.is_running
 
+    def test_successful_retry_clears_previous_project_error(self):
+        project = DeepProject.create("retry", "/tmp/retry")
+        project.fail("first attempt failed")
+        project.resume()
+
+        project.complete()
+
+        assert project.status is DeepProjectStatus.COMPLETED
+        assert project.error is None
+
     def test_stop(self):
         engine = self._make_engine()
         engine._run_state = EngineRunState.RUNNING

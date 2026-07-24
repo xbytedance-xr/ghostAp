@@ -6,9 +6,12 @@ and im_client default retry behavior.
 """
 from __future__ import annotations
 
+import base64
 import json
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
@@ -78,6 +81,84 @@ def _failure_response():
     resp = MagicMock()
     resp.success.return_value = False
     return resp
+
+
+def test_upload_acp_image_decodes_bounded_payload_for_im_client():
+    from src.acp.models import ACPImageInfo
+
+    handler = _make_handler()
+    handler.im_client.upload_image_bytes.return_value = "img_generated"
+    payload = b"\x89PNG\r\n\x1a\npayload"
+    image = ACPImageInfo(
+        image_id="sha256:image",
+        mime_type="image/png",
+        data=base64.b64encode(payload).decode("ascii"),
+        name="generated.png",
+    )
+
+    image_key = handler.upload_acp_image(image)
+
+    assert image_key == "img_generated"
+    handler.im_client.upload_image_bytes.assert_called_once_with(payload)
+
+
+def test_upload_acp_image_rejects_unsupported_mime_type():
+    from src.acp.models import ACPImageInfo
+
+    handler = _make_handler()
+    image = ACPImageInfo(
+        image_id="sha256:abc",
+        mime_type="image/svg+xml",
+        data=base64.b64encode(b"<svg/>").decode(),
+        name="unsafe.svg",
+    )
+
+    assert handler.upload_acp_image(image) is None
+    handler.im_client.upload_image_bytes.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("payload", "mime_type"),
+    [
+        (b"not an image", "image/png"),
+        (b"\x89PNG\r\n\x1a\npayload", "image/jpeg"),
+    ],
+)
+def test_upload_acp_image_defensively_rejects_spoofed_bytes(
+    payload,
+    mime_type,
+):
+    from src.acp.models import ACPImageInfo
+
+    handler = _make_handler()
+    image = ACPImageInfo(
+        image_id="sha256:spoofed",
+        mime_type=mime_type,
+        data=base64.b64encode(payload).decode(),
+        name="spoofed",
+    )
+
+    assert handler.upload_acp_image(image) is None
+    handler.im_client.upload_image_bytes.assert_not_called()
+
+
+def test_upload_acp_image_rejects_oversized_encoding_before_decode():
+    from src.acp.client import MAX_ACP_IMAGE_BYTES
+    from src.acp.models import ACPImageInfo
+
+    handler = _make_handler()
+    image = ACPImageInfo(
+        image_id="sha256:oversized",
+        mime_type="image/png",
+        data="A" * ((((MAX_ACP_IMAGE_BYTES + 2) // 3) * 4) + 1),
+        name="oversized.png",
+    )
+
+    with patch("src.feishu.handlers.base.base64.b64decode") as decode:
+        assert handler.upload_acp_image(image) is None
+
+    decode.assert_not_called()
+    handler.im_client.upload_image_bytes.assert_not_called()
 
 
 # ===========================================================================

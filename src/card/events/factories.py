@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from src.utils.text import sanitize_single_line_label
+
 from .types import CardEventType
 
 if TYPE_CHECKING:
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
         CycleDonePayload,
         CycleStartedPayload,
         FailedPayload,
+        ImagePayload,
         PhaseDonePayload,
         PhaseStartedPayload,
         PlanUpdatedPayload,
@@ -324,6 +327,52 @@ class CardEvent(Generic[P]):
         if not block_id:
             raise ValueError("block_id is required for tool_failed")
         return cls(type=CardEventType.TOOL_FAILED, payload={"block_id": block_id, "error": error})
+
+    @classmethod
+    def image_added(
+        cls,
+        image_id: str,
+        image_key: str,
+        alt: str = "任务图片",
+    ) -> CardEvent[ImagePayload]:
+        """Add a successfully uploaded image artifact to the card."""
+        if not image_id:
+            raise ValueError("image_id is required for image_added")
+        if not image_key:
+            raise ValueError("image_key is required for image_added")
+        return cls(
+            type=CardEventType.IMAGE_ADDED,
+            payload={
+                "image_id": image_id,
+                "image_key": image_key,
+                "alt": sanitize_single_line_label(
+                    alt,
+                    fallback="任务图片",
+                    max_chars=120,
+                ),
+            },
+        )
+
+    @classmethod
+    def image_failed(
+        cls,
+        image_id: str,
+        alt: str = "任务图片",
+    ) -> CardEvent[ImagePayload]:
+        """Record a non-fatal image publication failure."""
+        if not image_id:
+            raise ValueError("image_id is required for image_failed")
+        return cls(
+            type=CardEventType.IMAGE_FAILED,
+            payload={
+                "image_id": image_id,
+                "alt": sanitize_single_line_label(
+                    alt,
+                    fallback="任务图片",
+                    max_chars=120,
+                ),
+            },
+        )
 
     @classmethod
     def plan_updated(cls, content: str) -> CardEvent[PlanUpdatedPayload]:

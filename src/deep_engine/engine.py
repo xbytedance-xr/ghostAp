@@ -12,7 +12,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from ..acp import ACPEvent, ACPEventType
+from ..acp import ACPEvent, ACPEventType, PromptResult
+from ..acp.outcome import PromptOutcome, classify_prompt_result
 from ..agent_session import create_engine_session
 from ..agent_session.backend_resolver import is_ttadk_type, resolve_cwd
 from ..engine_base import BaseEngine, BaseEngineManager
@@ -270,19 +271,8 @@ class DeepEngine(BaseEngine):
                 if self._run_state == EngineRunState.STOPPING:
                     self._project.pause()
                     logger.info("[Deep:%s] 执行已暂停", project_name)
-                elif result.stop_reason in ("end_turn", "max_turn_requests"):
-                    self._project.complete()
-                    logger.info(
-                        "[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
-                        project_name,
-                        len(self._progress.tool_calls),
-                        len(self._progress.modified_files),
-                        self._project.duration() or 0,
-                    )
-                elif result.stop_reason == "cancelled":
-                    self._project.pause()
                 else:
-                    self._project.fail(f"意外停止: {result.stop_reason}")
+                    self._apply_prompt_result(result, project_name=project_name)
 
                 if callbacks.on_project_done:
                     callbacks.on_project_done(self._project)
@@ -312,6 +302,32 @@ class DeepEngine(BaseEngine):
                 self._run_state = EngineRunState.IDLE
             get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
+    def _apply_prompt_result(self, result, *, project_name: str) -> None:
+        """Translate transport completion into the Deep project terminal state."""
+        if self._project is None:
+            return
+        assessment = classify_prompt_result(result)
+        if assessment.outcome is PromptOutcome.COMPLETED:
+            self._project.complete()
+            logger.info(
+                "[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
+                project_name,
+                len(self._progress.tool_calls),
+                len(self._progress.modified_files),
+                self._project.duration() or 0,
+            )
+        elif assessment.outcome is PromptOutcome.CANCELLED:
+            self._project.pause()
+            logger.info("[Deep:%s] 执行已取消并暂停", project_name)
+        else:
+            self._project.fail(f"执行未完成: {assessment.detail}")
+            logger.warning(
+                "[Deep:%s] 执行未完成, stop_reason=%s, detail=%s",
+                project_name,
+                assessment.stop_reason,
+                assessment.detail,
+            )
+
     def _drain_pending_context(self, on_event, timeout, last_result):
         """Send any pending context injections as follow-up prompts in the same session."""
         while self._run_state == EngineRunState.RUNNING:
@@ -332,16 +348,26 @@ class DeepEngine(BaseEngine):
 
 请根据以上信息调整你的执行方案并继续。"""
             try:
-                last_result = self._session.send_prompt_with_retry(
+                follow_up_result = self._session.send_prompt_with_retry(
                     follow_up, on_event=on_event, timeout=timeout,
                     retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
                 )
+                assessment = classify_prompt_result(follow_up_result)
+                if assessment.outcome is not PromptOutcome.COMPLETED:
+                    with self._lock:
+                        self._pending_context[0:0] = batch
+                    return follow_up_result
+                last_result = follow_up_result
             except TimeoutError as e:
+                with self._lock:
+                    self._pending_context[0:0] = batch
                 logger.warning("[Deep] _drain_pending_context 超时: %s", get_error_detail(e))
-                break
+                return PromptResult(stop_reason="pending_context_timeout")
             except Exception as e:
+                with self._lock:
+                    self._pending_context[0:0] = batch
                 logger.error("[Deep] _drain_pending_context 发送失败: %s", get_error_detail(e))
-                break
+                return PromptResult(stop_reason="pending_context_error")
         return last_result
 
     def _build_deep_prompt(self, requirement: str) -> str:
@@ -363,6 +389,7 @@ class DeepEngine(BaseEngine):
 5. 执行时严格按计划与依赖关系推进；如需调整计划，先解释原因并更新计划
 6. 每个关键步骤完成后做一次自检/验证（单测/运行/静态检查等，按项目能力选择）
 7. 完成后输出总结：做了什么、改了哪些文件、如何验证，以及哪些任务并行/委托执行
+8. 返回完成前必须回读原始需求；若仍有未完成的用户要求、未验证的核心验收路径、未结束的计划/工具调用或相关失败测试，继续执行，无法继续时明确报告阻塞/失败，不得宣称完成
 
 ## 输出格式（强制）
 ### 分析
@@ -436,10 +463,11 @@ class DeepEngine(BaseEngine):
 
             if self._run_state == EngineRunState.STOPPING:
                 self._project.pause()
-            elif result.stop_reason in ("end_turn", "max_turn_requests"):
-                self._project.complete()
             else:
-                self._project.fail(f"意外停止: {result.stop_reason}")
+                self._apply_prompt_result(
+                    result,
+                    project_name=self._project.name,
+                )
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)

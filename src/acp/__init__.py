@@ -8,6 +8,7 @@ from .client import GhostAPClient
 from .models import (
     ACPEvent,
     ACPEventType,
+    ACPImageInfo,
     ACPSessionState,
     PlanEntryInfo,
     PlanInfo,
@@ -38,6 +39,7 @@ def __getattr__(name: str):
 __all__ = [
     "ACPEvent",
     "ACPEventType",
+    "ACPImageInfo",
     "ACPSessionState",
     "PlanEntryInfo",
     "PlanInfo",

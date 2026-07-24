@@ -85,6 +85,65 @@ def test_upload_file_returns_file_key(tmp_path):
     file_api.create.assert_called_once()
 
 
+def test_upload_image_bytes_returns_image_key():
+    """FeishuIMClient should upload in-memory ACP output as a message image."""
+    uploaded = {}
+    image_api = MagicMock()
+    image_api.create.side_effect = lambda request: (
+        uploaded.setdefault("bytes", request.request_body.image.read()),
+        _Response(data=MagicMock(image_key="img_generated_123")),
+    )[1]
+    client_obj = MagicMock()
+    client_obj.im.v1.image = image_api
+    client = FeishuIMClient(
+        lambda: client_obj,
+        MagicMock(im_api_max_retries=1),
+    )
+
+    image_key = client.upload_image_bytes(b"\x89PNG\r\n\x1a\npayload")
+
+    assert image_key == "img_generated_123"
+    request = image_api.create.call_args.args[0]
+    assert request.request_body.image_type == "message"
+    assert uploaded["bytes"] == b"\x89PNG\r\n\x1a\npayload"
+
+
+def test_upload_image_bytes_rebuilds_stream_and_request_for_retry(monkeypatch):
+    """Every retry should send the complete image through a fresh SDK request."""
+    payload = b"\x89PNG\r\n\x1a\nretry-payload"
+    uploaded: list[bytes] = []
+    requests = []
+    bodies = []
+    streams = []
+
+    def create(request):
+        requests.append(request)
+        bodies.append(request.request_body)
+        streams.append(request.request_body.image)
+        uploaded.append(request.request_body.image.read())
+        if len(uploaded) == 1:
+            return _Response(ok=False)
+        return _Response(data=MagicMock(image_key="img_retry_ok"))
+
+    image_api = MagicMock()
+    image_api.create.side_effect = create
+    client_obj = MagicMock()
+    client_obj.im.v1.image = image_api
+    client = FeishuIMClient(
+        lambda: client_obj,
+        MagicMock(im_api_max_retries=2),
+    )
+    monkeypatch.setattr("src.feishu.im_client.time.sleep", lambda _seconds: None)
+
+    image_key = client.upload_image_bytes(payload)
+
+    assert image_key == "img_retry_ok"
+    assert uploaded == [payload, payload]
+    assert requests[0] is not requests[1]
+    assert bodies[0] is not bodies[1]
+    assert streams[0] is not streams[1]
+
+
 def test_reply_file_sends_file_message_with_file_key():
     """FeishuIMClient.reply_file should reply with msg_type=file and file_key content."""
     message_api = MagicMock()

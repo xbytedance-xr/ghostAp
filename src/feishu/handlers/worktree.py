@@ -863,7 +863,7 @@ class WorktreeHandler(BaseEngineHandler):
         try:
             state, merge_results = self._with_repo_lock(root_path, chat_id, _locked_merge)
         except LockConflictError as e:
-            self.send_lock_conflict_card(e, message_id, "")
+            self.send_lock_conflict_card(e, message_id, "", chat_id=chat_id)
             return
 
         if state.last_error:
@@ -881,7 +881,7 @@ class WorktreeHandler(BaseEngineHandler):
                 state, cleanup_warnings = self._with_repo_lock(root_path, chat_id, _locked_cleanup)
                 cleaned = not cleanup_warnings
             except LockConflictError as e:
-                self.send_lock_conflict_card(e, message_id, "")
+                self.send_lock_conflict_card(e, message_id, "", chat_id=chat_id)
                 return
 
         # Use CardSession for cleanup card
@@ -959,7 +959,7 @@ class WorktreeHandler(BaseEngineHandler):
         try:
             state, warnings = self._with_repo_lock(root_path, chat_id, _locked_cleanup)
         except LockConflictError as e:
-            self.send_lock_conflict_card(e, message_id, "")
+            self.send_lock_conflict_card(e, message_id, "", chat_id=chat_id)
             return
         if warnings and not force:
             details = "\n".join(

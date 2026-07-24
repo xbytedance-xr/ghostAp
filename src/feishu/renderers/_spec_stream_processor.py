@@ -144,7 +144,10 @@ class SpecStreamProcessor(BaseStreamProcessor):
             chat_id=chat_id,
             session_creator=_task_session_creator,
             thinking_session=self._rotator,
-            bridge_class=ACPStreamBridge,
+            bridge_class=lambda session: ACPStreamBridge(
+                session,
+                image_uploader=self._image_uploader,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -415,6 +418,9 @@ class SpecStreamProcessor(BaseStreamProcessor):
 
     def _dispatch_build_event(self, event) -> None:
         """Dispatch Build-phase ACP events as native tool/plan CardEvents."""
+        if event.event_type == ACPEventType.IMAGE_CHUNK:
+            self._stream_bridge.on_event(event)
+            return
         card_evt = card_event_from_acp(event)
 
         if event.event_type == ACPEventType.TOOL_CALL_START:

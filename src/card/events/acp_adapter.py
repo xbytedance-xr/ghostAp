@@ -24,6 +24,7 @@ def card_event_from_acp(acp_event: "ACPEvent") -> CardEvent:
     Maps ACP event types to the card event pipeline:
     - TEXT_CHUNK → TEXT_DELTA
     - THOUGHT_CHUNK → REASONING_DELTA
+    - IMAGE_CHUNK → IMAGE_FAILED unless the media bridge uploads it first
     - TOOL_CALL_START → TOOL_STARTED
     - TOOL_CALL_UPDATE → TOOL_DELTA
     - TOOL_CALL_DONE → TOOL_DONE / TOOL_FAILED
@@ -43,6 +44,12 @@ def card_event_from_acp(acp_event: "ACPEvent") -> CardEvent:
                 "block_id": "_active_reasoning",
                 "text": acp_event.text or "",
             })
+        case AET.IMAGE_CHUNK:
+            image = acp_event.image
+            return CardEvent.image_failed(
+                image.image_id if image else "",
+                image.name if image else "任务图片",
+            )
         case AET.TOOL_CALL_START:
             tc = acp_event.tool_call
             content = sanitize_tool_event_content(tc.content if tc else "", fallback=tc.title if tc else "")

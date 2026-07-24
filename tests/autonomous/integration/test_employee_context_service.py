@@ -132,10 +132,13 @@ class _GroupBackend:
 
 
 class _SourceFactory:
-    def __init__(self) -> None:
+    def __init__(self, *, assembly_attempts: int = 1) -> None:
         thread = _stable_thread()
         self.source = _FakeSource(
-            traversals=[_pages(thread), _pages(thread)],
+            traversals=[
+                _pages(thread)
+                for _ in range(assembly_attempts * 2)
+            ],
         )
         self.calls = []
         self.close_calls = 0
@@ -174,6 +177,7 @@ def _composition(
     backend: _GroupBackend | None = None,
     source_factory: _SourceFactory | None = None,
     config: ThreadContextConfig | None = None,
+    group_ledger=None,
 ):
     workforce_state = state or _state()
 
@@ -207,6 +211,7 @@ def _composition(
         group_memory_reader=group_reader,
         source_factory=source_factory,
         config=config,
+        group_ledger=group_ledger,
     )
     return SimpleNamespace(
         service=service,
@@ -365,3 +370,199 @@ def test_projection_head_mismatch_fails_before_memory_or_source_reads() -> None:
     assert built.memory.calls == []
     assert built.backend.calls == []
     assert built.source_factory.calls == []
+
+
+def test_projection_head_catchup_retries_before_external_reads() -> None:
+    state = _state()
+    state.cursor_sequence = 1
+    state.cursor_hash = "a" * 64
+    built = _composition(state=state)
+    heads = iter(
+        (
+            JournalHead(),
+            JournalHead(1, "a" * 64),
+            JournalHead(1, "a" * 64),
+            JournalHead(1, "a" * 64),
+        )
+    )
+    built.data.service.get_head = lambda: next(heads)
+
+    snapshot = built.service.assemble(_request())
+
+    assert snapshot.l1_summary == "L1"
+    assert built.memory.calls == [("agt_1", "tenant_1", False)]
+    assert built.backend.calls == ["oc_1"]
+    assert len(built.source_factory.calls) == 1
+
+
+def test_semantically_unchanged_projection_advance_retries_snapshot() -> None:
+    state = _state()
+    state.cursor_sequence = 1
+    state.cursor_hash = "a" * 64
+    source_factory = _SourceFactory(assembly_attempts=2)
+    built = _composition(state=state, source_factory=source_factory)
+    original_read = built.memory.read_l1
+    advanced = False
+
+    def read_and_advance(
+        agent_id: str,
+        tenant_key: str,
+        *,
+        allow_unscoped_legacy: bool,
+    ) -> str | None:
+        nonlocal advanced
+        content = original_read(
+            agent_id,
+            tenant_key,
+            allow_unscoped_legacy=allow_unscoped_legacy,
+        )
+        if not advanced:
+            advanced = True
+            state.cursor_sequence = 2
+            state.cursor_hash = "b" * 64
+            built.data.service.head = JournalHead(2, "b" * 64)
+        return content
+
+    built.memory.read_l1 = read_and_advance
+
+    snapshot = built.service.assemble(_request())
+
+    assert snapshot.l1_summary == "L1"
+    assert built.memory.calls == [
+        ("agt_1", "tenant_1", False),
+        ("agt_1", "tenant_1", False),
+    ]
+    assert built.backend.calls == ["oc_1", "oc_1"]
+    assert len(built.source_factory.calls) == 1
+
+
+def test_projection_retry_does_not_accept_membership_revocation() -> None:
+    state = _state()
+    state.cursor_sequence = 1
+    state.cursor_hash = "a" * 64
+    built = _composition(state=state)
+    original_read = built.memory.read_l1
+
+    def read_and_revoke(
+        agent_id: str,
+        tenant_key: str,
+        *,
+        allow_unscoped_legacy: bool,
+    ) -> str | None:
+        content = original_read(
+            agent_id,
+            tenant_key,
+            allow_unscoped_legacy=allow_unscoped_legacy,
+        )
+        state.employees["agt_1"] = replace(
+            state.employees["agt_1"],
+            member_groups=(),
+        )
+        state.cursor_sequence = 2
+        state.cursor_hash = "b" * 64
+        built.data.service.head = JournalHead(2, "b" * 64)
+        return content
+
+    built.memory.read_l1 = read_and_revoke
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        built.service.assemble(_request())
+
+    assert raised.value.reason is ContextUnavailableReason.SCOPE
+    assert built.memory.calls == [("agt_1", "tenant_1", False)]
+    assert built.backend.calls == []
+    assert built.source_factory.calls == []
+
+
+def test_partial_context_is_counted_for_drain_and_rejected_after_stop() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    snapshot = object()
+
+    class BlockingLedger:
+        def assemble_partial(self, *_args, **_kwargs):
+            entered.set()
+            assert release.wait(2)
+            return snapshot
+
+    built = _composition(group_ledger=BlockingLedger())
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            built.service.assemble_canonical_partial(
+                _request(),
+                warning_reason=ContextUnavailableReason.REVISION,
+            )
+        )
+    )
+    worker.start()
+    assert entered.wait(2)
+    closer = threading.Thread(
+        target=lambda: (built.service.close(), closed.set())
+    )
+    closer.start()
+    closed_early = closed.wait(0.05)
+    release.set()
+    assert closed.wait(2)
+    worker.join()
+    closer.join()
+    assert not closed_early
+    assert results == [snapshot]
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        built.service.assemble_canonical_partial(
+            _request(),
+            warning_reason=ContextUnavailableReason.REVISION,
+        )
+    assert raised.value.reason is ContextUnavailableReason.SOURCE
+
+
+def test_partial_context_rechecks_membership_after_ledger_read() -> None:
+    state = _state()
+    state.cursor_sequence = 1
+    state.cursor_hash = "a" * 64
+
+    class RevokingLedger:
+        def assemble_partial(self, *_args, **_kwargs):
+            state.employees["agt_1"] = replace(
+                state.employees["agt_1"],
+                member_groups=(),
+            )
+            state.cursor_sequence = 2
+            state.cursor_hash = "b" * 64
+            built.data.service.head = JournalHead(2, "b" * 64)
+            return object()
+
+    built = _composition(state=state, group_ledger=RevokingLedger())
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        built.service.assemble_canonical_partial(
+            _request(),
+            warning_reason=ContextUnavailableReason.REVISION,
+        )
+
+    assert raised.value.reason is ContextUnavailableReason.SCOPE
+
+
+def test_partial_context_rejects_projection_advance_during_ledger_read() -> None:
+    state = _state()
+    state.cursor_sequence = 1
+    state.cursor_hash = "a" * 64
+
+    class AdvancingLedger:
+        def assemble_partial(self, *_args, **_kwargs):
+            state.cursor_sequence = 2
+            state.cursor_hash = "b" * 64
+            built.data.service.head = JournalHead(2, "b" * 64)
+            return object()
+
+    built = _composition(state=state, group_ledger=AdvancingLedger())
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        built.service.assemble_canonical_partial(
+            _request(),
+            warning_reason=ContextUnavailableReason.REVISION,
+        )
+
+    assert raised.value.reason is ContextUnavailableReason.REVISION

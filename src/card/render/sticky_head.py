@@ -1,4 +1,4 @@
-"""sticky_head builder: phase_banner + compact task_list."""
+"""Sticky-head builder: phase banner plus state-appropriate task progress."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def build_sticky_head(
     atoms: list[RenderAtom] = []
 
     runtime = getattr(state, "runtime_stats", None) or RuntimeStats(elapsed_seconds=0.0)
-    banner_text = compute_banner(metadata, runtime)
+    banner_text = "" if metadata.is_subagent else compute_banner(metadata, runtime)
     if banner_text:
         banner_atom = RenderAtom(
             kind="phase_banner",
@@ -40,7 +40,10 @@ def build_sticky_head(
     if task_list is None:
         task_list = next((b for b in getattr(state, "blocks", ()) if getattr(b, "kind", "") == "task_list"), None)
     if task_list is not None and getattr(task_list, "tasks", None):
-        panel = _render_task_list_compact(task_list)
+        panel = _render_task_list(
+            task_list,
+            compact=bool(metadata.is_subagent),
+        )
         if panel is not None:
             tl_atom = RenderAtom(
                 kind="task_list",
@@ -60,9 +63,9 @@ def build_sticky_head(
     return tuple(atoms)
 
 
-def _render_task_list_compact(task_list) -> dict | None:
-    """Render task list in compact mode, tolerating older renderer signature."""
+def _render_task_list(task_list, *, compact: bool) -> dict | None:
+    """Render task context, tolerating an older renderer signature."""
     try:
-        return render_task_list_panel(task_list, compact=True)
+        return render_task_list_panel(task_list, compact=compact)
     except TypeError:
         return render_task_list_panel(task_list)

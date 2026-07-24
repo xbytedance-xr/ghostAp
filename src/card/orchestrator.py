@@ -17,6 +17,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from src.card.events import CardEvent, CardEventType
@@ -24,6 +25,7 @@ from src.card.hooks import BackfillHook
 from src.card.nav_link import format_task_continuation_link
 from src.card.task_registry import TaskRegistry, TaskStatus
 from src.card.tool_display import (
+    extract_agent_tool_name,
     extract_tool_call_label,
     is_unhelpful_display_label,
     summarize_tool_call_content,
@@ -204,9 +206,6 @@ class TaskOrchestrator:
 
         # Task-level rotation counters (protected by self._lock)
         self._rotation_counts: dict[str, int] = {}
-
-        # Thread pool for timeout-protected close operations
-        self._close_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
         # Subscribe to registry changes for auto-broadcast
         self._registry.subscribe(self._on_registry_status_change)
@@ -669,6 +668,8 @@ class TaskOrchestrator:
         if self._closed_event.is_set():
             return
 
+        if self._route_bound_media_event(acp_event, fallback_bridge):
+            return
         if self._route_bound_tool_task_event(acp_event):
             return
         if self._route_agent_task_event(acp_event):
@@ -710,6 +711,53 @@ class TaskOrchestrator:
             from src.card.events import card_event_from_acp
             card_evt = card_event_from_acp(acp_event)
             self.dispatch_to_task(task_id, card_evt)
+
+    def _route_bound_media_event(
+        self,
+        acp_event: ACPEvent,
+        fallback_bridge: StreamBridge,
+    ) -> bool:
+        """Route source-tagged media to its stable tool/task owner."""
+        from src.acp.models import ACPEventType
+
+        if acp_event.event_type is not ACPEventType.IMAGE_CHUNK:
+            return False
+        source_id = str(getattr(acp_event, "source_id", "") or "").strip()
+        if not source_id:
+            return False
+
+        with self._lock:
+            if source_id in self._subagent_task_ids:
+                task_id = source_id
+            else:
+                task_id = self._tool_task_bindings.get(source_id, "")
+            resolved_id = self._overflow_target.get(task_id, task_id)
+            finalized = resolved_id in self._finalized_task_ids
+            bridge = self._bridges.get(resolved_id)
+
+        if not task_id:
+            return False
+        if not finalized and bridge is not None:
+            bridge.on_event(acp_event)
+            return True
+
+        # A closed task card rejects later mutations, and a task without its
+        # own media bridge cannot upload the payload. Preserve the artifact on
+        # the fallback card with an explicit owner instead of silently losing
+        # it or attributing it to whichever task happens to be active.
+        task = self._registry.get(task_id)
+        label = str(getattr(task, "name", "") or task_id).strip()
+        image = getattr(acp_event, "image", None)
+        if image is not None and label:
+            name = image.name
+            if label not in name:
+                name = f"{label} · {name}"
+            acp_event = replace(
+                acp_event,
+                image=replace(image, name=name[:120]),
+            )
+        fallback_bridge.on_event(acp_event)
+        return True
 
     def route_or_fallback(self, acp_event: ACPEvent, fallback_bridge: StreamBridge) -> bool:
         """Unified routing predicate + dispatch for renderers.
@@ -1265,8 +1313,9 @@ class TaskOrchestrator:
                 "failed" if status == "failed" else "completed",
                 summary=summarize_tool_call_content(content),
             )
-            with self._lock:
-                self._tool_task_bindings.pop(tool_id, None)
+            # Keep the stable media binding through orchestrator teardown.
+            # Some providers emit source-tagged artifacts after the terminal
+            # tool frame; those must degrade with explicit task attribution.
         return True
 
     def _match_plan_task_for_tool(self, tool_call) -> str:
@@ -1343,7 +1392,7 @@ class TaskOrchestrator:
                 and not is_unhelpful_display_label(existing_label)
             ):
                 label = existing_label
-            if tool == "subagent":
+            if tool in {"subagent", "子代理"}:
                 tool = str(existing.get("tool") or tool)
         summary = {
             **existing,
@@ -1360,10 +1409,11 @@ class TaskOrchestrator:
     @staticmethod
     def _is_agent_task(tool_call) -> bool:
         title = str(getattr(tool_call, "title", "") or "").strip().lower()
+        kind = str(getattr(tool_call, "kind", "") or "").strip().lower()
         content = str(getattr(tool_call, "content", "") or "").strip()
-        if title in _AGENT_TOOL_TITLES:
+        if kind == "agent" or title in _AGENT_TOOL_TITLES:
             return True
-        return "子代理：" in content
+        return kind == "other" and "子代理：" in content
 
     @staticmethod
     def _is_task_tool(tool_call) -> bool:
@@ -1384,17 +1434,7 @@ class TaskOrchestrator:
 
     @staticmethod
     def _extract_agent_tool_name(tool_call) -> str:
-        content = str(getattr(tool_call, "content", "") or "").strip()
-        for line in content.splitlines():
-            marker = "子代理："
-            if marker in line:
-                name = line.split(marker, 1)[1].strip()
-                if name:
-                    return name[:40]
-        title = str(getattr(tool_call, "title", "") or "").strip().lower()
-        if title in _AGENT_TOOL_TITLES:
-            return title
-        return "subagent"
+        return extract_agent_tool_name(tool_call)
 
     @classmethod
     def is_agent_task_event(cls, acp_event: ACPEvent) -> bool:
@@ -1492,7 +1532,6 @@ class TaskOrchestrator:
 
         self._create_final_summary_session(summary, failed=failed)
         self._fallback_session = None
-        self._shutdown_close_executor()
         logger.info("TaskOrchestrator: finished with summary for chat_id=%s", self._chat_id)
 
     def _cancel_broadcast_timer(self) -> None:
@@ -1539,26 +1578,6 @@ class TaskOrchestrator:
         session.dispatch(CardEvent.text_delta(block_id, summary))
         session.dispatch(CardEvent.text_done(block_id))
         session.dispatch(CardEvent.failed(summary) if failed else CardEvent.completed(summary=summary))
-
-    def _shutdown_close_executor(self) -> None:
-        if self._close_executor is None:
-            return
-        _executor = self._close_executor
-        self._close_executor = None
-        _shutdown_done = threading.Event()
-
-        def _timed_shutdown():
-            _executor.shutdown(wait=True, cancel_futures=True)
-            _shutdown_done.set()
-
-        t = threading.Thread(target=_timed_shutdown, daemon=True)
-        t.start()
-        if not _shutdown_done.wait(timeout=2.0):
-            logger.warning(
-                "TaskOrchestrator: executor shutdown timed out (2s), "
-                "orphan threads may still be running for chat_id=%s",
-                self._chat_id,
-            )
 
     def close(
         self,
@@ -1609,28 +1628,36 @@ class TaskOrchestrator:
 
         self._fallback_session = None
 
-        self._shutdown_close_executor()
-
         logger.info("TaskOrchestrator: closed for chat_id=%s", self._chat_id)
 
     def _run_with_timeout(self, fn: Callable[[], None], *, timeout: float) -> None:
-        """Run a callable in a managed thread pool with timeout protection.
+        """Run a close callable in an isolated daemon thread.
 
-        Uses a lazy-initialized ThreadPoolExecutor (max_workers=1) that is
-        properly shut down in close(). On timeout, the executor is discarded
-        so subsequent operations get a fresh thread (the old one is orphaned).
+        Python cannot stop a running thread. A timed-out close worker therefore
+        must be a daemon: abandoning a permanently blocked bridge then cannot
+        keep the service process alive during interpreter shutdown.
         """
-        if self._close_executor is None:
-            self._close_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="orch-close"
-            )
-        future = self._close_executor.submit(fn)
+        future: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+        def _invoke() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                fn()
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(None)
+
+        worker = threading.Thread(
+            target=_invoke,
+            name=f"orch-close-{self._chat_id}",
+            daemon=True,
+        )
+        worker.start()
         try:
             future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             future.cancel()
-            # Discard blocked executor so next call gets a fresh thread
-            self._close_executor.shutdown(wait=False)
-            self._close_executor = None
             logger.warning("TaskOrchestrator: close operation timed out after %.1fs", timeout)
             raise TimeoutError(f"Operation timed out after {timeout}s")

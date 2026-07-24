@@ -32,7 +32,7 @@ class MockClient:
         pass
 
 
-def _make_programming_session(mode_name="coco", **kwargs):
+def _make_programming_session(mode_name="coco", image_uploader=None, **kwargs):
     client = MockClient()
     delivery = CardDelivery(client)
     metadata = build_programming_metadata(mode_name, **kwargs)
@@ -55,7 +55,15 @@ def _make_programming_session(mode_name="coco", **kwargs):
             session_id=f"prog_{mode_name}_{counter['value']}",
         )
 
-    return ProgrammingCardSession(session, session_factory=make_task_session, base_metadata=metadata), client
+    return (
+        ProgrammingCardSession(
+            session,
+            session_factory=make_task_session,
+            base_metadata=metadata,
+            image_uploader=image_uploader,
+        ),
+        client,
+    )
 
 
 class TestBuildProgrammingMetadata:
@@ -105,6 +113,48 @@ class TestProgrammingCardSession:
         pcs.start()
         assert len(client.creates) == 1
         assert pcs.session.state is not None
+
+    def test_image_event_uploads_once_and_enters_card_state(self):
+        from unittest.mock import MagicMock
+
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo
+
+        image = ACPImageInfo(
+            image_id="sha256:generated",
+            mime_type="image/png",
+            data="aW1hZ2U=",
+            name="generated.png",
+        )
+        uploader = MagicMock(return_value="img_generated")
+        pcs, _ = _make_programming_session(image_uploader=uploader)
+        pcs.start()
+        event = ACPEvent(event_type=ACPEventType.IMAGE_CHUNK, image=image)
+
+        pcs.on_event(event)
+        pcs.on_event(event)
+
+        uploader.assert_called_once_with(image)
+        blocks = [block for block in pcs.session.state.blocks if block.kind == "image"]
+        assert len(blocks) == 1
+        assert blocks[0].image_key == "img_generated"
+
+    def test_image_upload_failure_is_visible_without_failing_task(self):
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo
+
+        image = ACPImageInfo(
+            image_id="sha256:failed",
+            mime_type="image/png",
+            data="aW1hZ2U=",
+            name="failed.png",
+        )
+        pcs, _ = _make_programming_session(image_uploader=lambda _: None)
+        pcs.start()
+
+        pcs.on_event(ACPEvent(event_type=ACPEventType.IMAGE_CHUNK, image=image))
+
+        block = next(block for block in pcs.session.state.blocks if block.kind == "image")
+        assert block.status == "failed"
+        assert pcs.session.state.terminal == "running"
 
     def test_start_and_finish_drive_live_ticker(self):
         calls: list[str] = []
@@ -190,14 +240,9 @@ class TestProgrammingCardSession:
         text_blocks = [b for b in state.blocks if b.kind == "text"]
         assert any("streaming text" in b.content for b in text_blocks)
 
-    def test_on_event_updates_turn_snapshot_without_rendering_legacy_markdown(self):
+    def test_on_event_projects_acp_directly_to_card_state(self):
         pcs, _ = _make_programming_session()
         pcs.start()
-
-        def fail_render():
-            raise AssertionError("legacy markdown render should not run")
-
-        pcs._acp_renderer._render = fail_render
 
         from src.acp.models import ACPEvent, ACPEventType
         pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="streaming text"))
@@ -330,8 +375,6 @@ class TestProgrammingCardSession:
         pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="第二轮。"))
         pcs._flush_now()
 
-        pcs._acp_renderer.reset()
-        pcs._turn_snapshots = ()
         pcs.on_event(ACPEvent(
             event_type=ACPEventType.TOOL_CALL_START,
             tool_call=ToolCallInfo(id="read-2", title="Read", kind="read", status="in_progress", content="src/b.py"),
@@ -347,7 +390,7 @@ class TestProgrammingCardSession:
         assert [b.content for b in text_blocks] == ["第一轮。", "第二轮。", "第三轮。"]
         assert len({b.block_id for b in text_blocks}) == 3
 
-    def test_tool_calls_do_not_fragment_one_reasoning_summary(self):
+    def test_tool_calls_split_reasoning_into_chronological_turns(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 
         pcs, _ = _make_programming_session()
@@ -371,39 +414,148 @@ class TestProgrammingCardSession:
             tool_call=ToolCallInfo(id="read-2", title="Read", kind="read", status="completed", content="done"),
         ))
 
-        reasoning_blocks = [b for b in pcs.session.state.blocks if b.kind == "reasoning"]
-        assert len(reasoning_blocks) == 1
-        assert reasoning_blocks[0].block_id == "_active_reasoning"
-        assert reasoning_blocks[0].content == "需要先读文件。\n再检查测试。"
-        assert reasoning_blocks[0].status == "active"
+        process_blocks = [
+            block
+            for block in pcs.session.state.blocks
+            if block.kind in {"reasoning", "tool_call"}
+        ]
+        assert [block.kind for block in process_blocks] == [
+            "reasoning",
+            "tool_call",
+            "reasoning",
+            "tool_call",
+        ]
+        reasoning_blocks = [block for block in process_blocks if block.kind == "reasoning"]
+        assert [block.block_id for block in reasoning_blocks] == [
+            "_active_reasoning",
+            "_turn_2_reasoning",
+        ]
+        assert [block.content for block in reasoning_blocks] == [
+            "需要先读文件。",
+            "再检查测试。",
+        ]
+        assert [block.status for block in reasoning_blocks] == ["completed", "completed"]
 
         pcs.finish()
 
         reasoning_blocks = [b for b in pcs.session.state.blocks if b.kind == "reasoning"]
-        assert len(reasoning_blocks) == 1
-        assert reasoning_blocks[0].status == "completed"
+        assert all(block.status == "completed" for block in reasoning_blocks)
 
-        from src.card.render.budget import RenderBudget
-        from src.card.render.renderer import render_card
+    def test_tool_boundary_retires_reasoning_from_a_different_source(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 
-        pages = render_card(pcs.session.state, RenderBudget())
-        panels = [
-            element
-            for page in pages
-            for element in page._card_json["body"]["elements"]
-            if element.get("tag") == "collapsible_panel"
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="工具前分析。",
+                source_id="agent-a",
+            )
+        )
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_START,
+                tool_call=ToolCallInfo(
+                    id="read-cross-source",
+                    title="Read",
+                    kind="read",
+                    status="in_progress",
+                    content="src/a.py",
+                ),
+            )
+        )
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_DONE,
+                tool_call=ToolCallInfo(
+                    id="read-cross-source",
+                    title="Read",
+                    kind="read",
+                    status="completed",
+                    content="done",
+                ),
+            )
+        )
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="工具后分析。",
+                source_id="agent-a",
+            )
+        )
+
+        process_blocks = [
+            block
+            for block in pcs.session.state.blocks
+            if block.kind in {"reasoning", "tool_call"}
         ]
-        titles = [panel["header"]["title"]["content"] for panel in panels]
-        assert sum("过程摘要" in title for title in titles) == 1
-        reasoning_panel = next(
-            panel for panel in panels if "过程摘要" in panel["header"]["title"]["content"]
+        assert [block.kind for block in process_blocks] == [
+            "reasoning",
+            "tool_call",
+            "reasoning",
+        ]
+        reasoning_blocks = [
+            block for block in process_blocks if block.kind == "reasoning"
+        ]
+        assert len({block.block_id for block in reasoning_blocks}) == 2
+        assert [block.content for block in reasoning_blocks] == [
+            "工具前分析。",
+            "工具后分析。",
+        ]
+
+    def test_image_boundary_retires_reasoning_before_later_thought(self):
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo
+
+        pcs, _ = _make_programming_session(
+            image_uploader=lambda _: "img_boundary",
         )
-        assert reasoning_panel["elements"][0]["content"] == (
-            "- 需要先读文件。\n- 再检查测试。"
+        pcs.start()
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="图片前分析。",
+                source_id="agent-a",
+            )
         )
-        activity_titles = [title for title in titles if "过程摘要" not in title]
-        assert len(activity_titles) == 1
-        assert "2" in activity_titles[0]
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.IMAGE_CHUNK,
+                image=ACPImageInfo(
+                    image_id="sha256:boundary",
+                    mime_type="image/png",
+                    data="aW1hZ2U=",
+                    name="boundary.png",
+                ),
+                source_id="image-tool",
+            )
+        )
+        pcs.on_event(
+            ACPEvent(
+                event_type=ACPEventType.THOUGHT_CHUNK,
+                text="图片后分析。",
+                source_id="agent-a",
+            )
+        )
+
+        process_blocks = [
+            block
+            for block in pcs.session.state.blocks
+            if block.kind in {"reasoning", "image"}
+        ]
+        assert [block.kind for block in process_blocks] == [
+            "reasoning",
+            "image",
+            "reasoning",
+        ]
+        reasoning_blocks = [
+            block for block in process_blocks if block.kind == "reasoning"
+        ]
+        assert len({block.block_id for block in reasoning_blocks}) == 2
+        assert [block.content for block in reasoning_blocks] == [
+            "图片前分析。",
+            "图片后分析。",
+        ]
 
     def test_plan_update_moves_to_task_list_at_card_start(self):
         from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
@@ -504,6 +656,41 @@ class TestProgrammingCardSession:
         assert all(state.metadata.is_subagent for state in states)
         assert all(state.metadata.parent_card_seq == "1" for state in states)
         assert {state.metadata.tool_name for state in states} == {"Explore"}
+
+    def test_escaped_agent_marker_stays_out_of_child_metadata_and_chrome(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+        from src.card.render.budget import RenderBudget
+        from src.card.render.footer import render_footer
+        from src.card.render.renderer import render_card
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="call_internal",
+                title="agent",
+                kind="other",
+                status="in_progress",
+                content='子代理：\\" not in ordinary_output\\",\\n',
+            ),
+        ))
+
+        child_state = pcs._agent_sessions["call_internal"].state
+        card_json = render_card(child_state, RenderBudget())[0]._card_json
+        header_text = json.dumps(card_json["header"], ensure_ascii=False)
+        footer_text = "\n".join(
+            element["content"]
+            for element in render_footer(child_state)
+            if isinstance(element.get("content"), str)
+        )
+        for surface in (header_text, footer_text):
+            assert "call_internal" not in surface
+            assert "ordinary_output" not in surface
+            assert "\\n" not in surface
+
+        assert child_state.metadata.tool_name == "agent"
+        assert child_state.metadata.unit_label == "子任务"
 
     def test_task_tool_opens_independent_card(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
@@ -653,6 +840,34 @@ class TestProgrammingCardSession:
         assert "✅ 实现后端接口" in body
         assert "完成 1" in body
 
+    def test_cancel_updates_parent_subagent_summary_before_terminal(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-1",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="实现后端接口\n子代理：Explore",
+            ),
+        ))
+
+        pcs.cancel(reason="user_stop")
+
+        assert pcs.session.state.terminal == "cancelled"
+        assert pcs._agent_sessions["agent-task-1"].state.terminal == "cancelled"
+        assert pcs.session.state.metadata.subagents[0]["status"] == "cancelled"
+        body = str(render_card(pcs.session.state, RenderBudget())[0]._card_json["body"]["elements"])
+        assert "⚪ 实现后端接口" in body
+        assert "取消 1" in body
+        assert "运行中 1" not in body
+
     def test_parent_completion_survives_subagent_summary_dispatch_failure(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 
@@ -741,11 +956,7 @@ class TestProgrammingCardSession:
         assert calls == [("a", "Explore")]
 
     def test_render_omits_process_summary_after_later_text_updates(self):
-        """Completed tools render as activity_digest between text blocks.
-
-        With slim-flow redesign, completed tools always produce a one-line
-        activity_digest placed inline in body between surrounding text blocks.
-        """
+        """Completed tools join the folded execution record beside answer text."""
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
         from src.card.render.budget import RenderBudget
         from src.card.render.renderer import render_card
@@ -782,8 +993,9 @@ class TestProgrammingCardSession:
         body = cards[0]._card_json["body"]["elements"]
         rendered_text = str(body)
 
-        # activity_digest should be present between text blocks
-        assert "已运行" in rendered_text
+        assert "执行记录" in rendered_text
+        assert "bash" in rendered_text
+        assert "pytest tests/test_example.py" in rendered_text
         assert "先说明目标。" in rendered_text
         assert "后续正文继续更新。" in rendered_text
 
@@ -882,6 +1094,70 @@ class TestNonStreamingFallback:
         or UI_TEXT["mode_exec_complete"]
     This ensures result.text is the primary source when streaming is unavailable.
     """
+
+    def test_generated_image_is_uploaded_and_replied_as_card(self):
+        import base64
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from src.acp.models import ACPEvent, ACPEventType, ACPImageInfo, PromptResult
+        from src.feishu.handlers.programming import ProgrammingModeHandler
+
+        image = ACPImageInfo(
+            image_id="sha256:fallback",
+            mime_type="image/png",
+            data=base64.b64encode(b"\x89PNG\r\n\x1a\nfallback").decode(),
+            name="fallback.png",
+        )
+        session = MagicMock()
+
+        def send_prompt(_text, *, on_event, timeout):
+            assert timeout == 60
+            on_event(ACPEvent(event_type=ACPEventType.IMAGE_CHUNK, image=image))
+            return PromptResult(stop_reason="end_turn", text="图片已生成")
+
+        session.send_prompt.side_effect = send_prompt
+        handler = SimpleNamespace(
+            settings=SimpleNamespace(
+                coco_execution_timeout=60,
+                claude_execution_timeout=60,
+                repo_lock_hard_timeout=120,
+            ),
+            is_coco=True,
+            mode_name="Coco",
+            upload_acp_image=MagicMock(return_value="img_fallback"),
+            reply_card=MagicMock(),
+            reply_text=MagicMock(),
+            add_reaction=MagicMock(),
+        )
+
+        ProgrammingModeHandler._handle_response_non_streaming(
+            handler,
+            "message-1",
+            "chat-1",
+            "生成图片",
+            session,
+            None,
+            "/workspace",
+        )
+
+        handler.upload_acp_image.assert_called_once_with(image)
+        handler.reply_text.assert_not_called()
+        handler.reply_card.assert_called_once()
+        card_json = json.loads(handler.reply_card.call_args.args[1])
+        image_elements = [
+            element
+            for element in card_json["body"]["elements"]
+            if element.get("tag") == "img"
+        ]
+        assert image_elements == [
+            {
+                "tag": "img",
+                "img_key": "img_fallback",
+                "alt": {"tag": "plain_text", "content": "图片 1"},
+            }
+        ]
 
     def test_result_text_used_as_primary_response(self):
         """When send_prompt returns result.text, it should be the final response."""

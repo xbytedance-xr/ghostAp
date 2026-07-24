@@ -71,9 +71,21 @@ class _RetryDispatchAdapter:
         self._client._process_with_intent(message_id, chat_id, text, project)
 
     def send_lock_conflict_card(
-        self, e: Any, message_id: str, command_text: str, *, retry_count: int = 0,
+        self,
+        e: Any,
+        message_id: str,
+        command_text: str,
+        *,
+        retry_count: int = 0,
+        chat_id: str = "",
     ) -> None:
-        self._client.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
+        self._client.send_lock_conflict_card(
+            e,
+            message_id,
+            command_text,
+            retry_count=retry_count,
+            chat_id=chat_id,
+        )
 
 
 def _resolve_project(client: "FeishuWSClient", pid: str | None, cid: str):

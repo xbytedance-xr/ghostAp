@@ -54,7 +54,13 @@ class RetryDispatchProtocol(Protocol):
     def process_with_intent(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext]) -> None: ...
 
     def send_lock_conflict_card(
-        self, e: LockConflictError, message_id: str, command_text: str, *, retry_count: int = 0,
+        self,
+        e: LockConflictError,
+        message_id: str,
+        command_text: str,
+        *,
+        retry_count: int = 0,
+        chat_id: str = "",
     ) -> None: ...
 
 
@@ -193,7 +199,14 @@ class RetryCommandHandler:
 
         probe = repo_lock_mgr.acquire(project.root_path, cid)
         if not probe.success:
-            self._send_probe_conflict_card(mid, cmd, project, probe, retry_count)
+            self._send_probe_conflict_card(
+                mid,
+                cid,
+                cmd,
+                project,
+                probe,
+                retry_count,
+            )
             return True
 
         # Probe succeeded — release immediately; real lock acquired downstream.
@@ -209,7 +222,13 @@ class RetryCommandHandler:
         except Exception as exc:
             from ..repo_lock import LockConflictError
             if isinstance(exc, LockConflictError):
-                self._handle_lock_conflict(exc, mid, cmd, retry_count)
+                self._handle_lock_conflict(
+                    exc,
+                    mid,
+                    cid,
+                    cmd,
+                    retry_count,
+                )
             else:
                 raise
 
@@ -218,7 +237,13 @@ class RetryCommandHandler:
     # ------------------------------------------------------------------
 
     def _send_probe_conflict_card(
-        self, mid: str, cmd: str, project: Any, probe: Any, retry_count: int
+        self,
+        mid: str,
+        cid: str,
+        cmd: str,
+        project: Any,
+        probe: Any,
+        retry_count: int,
     ) -> None:
         """Send a lock conflict card after a failed probe-acquire."""
         from ..repo_lock import LockConflictError
@@ -229,13 +254,30 @@ class RetryCommandHandler:
             root_path=project.root_path,
             last_active_time=probe.last_active_time or 0.0,
         )
-        self._dispatch.send_lock_conflict_card(err, mid, cmd, retry_count=retry_count)
+        self._dispatch.send_lock_conflict_card(
+            err,
+            mid,
+            cmd,
+            retry_count=retry_count,
+            chat_id=cid,
+        )
 
     def _handle_lock_conflict(
-        self, exc: Any, mid: str, cmd: str, retry_count: int
+        self,
+        exc: Any,
+        mid: str,
+        cid: str,
+        cmd: str,
+        retry_count: int,
     ) -> None:
         """Handle a ``LockConflictError`` raised during dispatch."""
-        self._dispatch.send_lock_conflict_card(exc, mid, cmd, retry_count=retry_count)
+        self._dispatch.send_lock_conflict_card(
+            exc,
+            mid,
+            cmd,
+            retry_count=retry_count,
+            chat_id=cid,
+        )
 
 
 # Sentinel object indicating that _resolve_project rejected the request.

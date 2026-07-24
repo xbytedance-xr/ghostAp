@@ -1424,7 +1424,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         from ...repo_lock import LockConflictError
         from ...sandbox import SandboxExecutor
 
-        lock_root_path = getattr(project, "root_path", None) or working_dir
+        if project is not None:
+            lock_root_path = getattr(project, "root_path", None) or working_dir
+        else:
+            lock_root_path = self.lock_helper.resolve_git_lock_root(working_dir)
 
         def _run_shell():
             executor = SandboxExecutor()
@@ -1444,9 +1447,18 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             return result
 
         try:
-            return self._with_repo_lock(lock_root_path, chat_id, _run_shell)
+            return self.lock_helper._with_repo_lock_strict(
+                lock_root_path,
+                chat_id,
+                _run_shell,
+            )
         except LockConflictError as err:
-            self.send_lock_conflict_card(err, message_id, cmd, chat_id=chat_id)
+            self.send_lock_conflict_card(
+                err,
+                message_id,
+                cmd,
+                chat_id=chat_id,
+            )
             return None
 
     def submit_shell_command(

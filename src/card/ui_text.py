@@ -672,6 +672,10 @@ UI_TEXT = {
     "mode_invalid_project_path": "⚠️ {msg}\n\n请切换到有效目录后重试",
     "mode_project_dir_label": "📂 项目目录: {path}",
     "mode_exec_complete": "✅ 执行完成",
+    "mode_exec_cancelled_title": "执行已取消",
+    "mode_exec_cancelled_msg": "⏹️ 任务已取消：{reason}",
+    "mode_exec_incomplete_title": "执行未完成",
+    "mode_exec_incomplete_msg": "⚠️ 任务未完成：{reason}",
     "mode_exec_timeout_title": "执行超时",
     "mode_exec_exception_title": "执行异常",
     "mode_exec_timeout_msg": "⏳ 执行超时: {error}",
@@ -913,6 +917,11 @@ UI_TEXT = {
     # --- Reasoning panel ---
     "reasoning_panel_thinking": "💭 **正在分析…**",
     "reasoning_panel_done": "💭 **过程摘要** · {char_count}字",
+    # --- Programming execution flow ---
+    "execution_current_analysis": "⏳ **正在分析** · {summary}",
+    "execution_current_tool": "⏳ **正在调用 {tool_name}**{suffix}",
+    "execution_history_title": "📋 **执行记录** · {count} 步",
+    "execution_history_folded": "… 较早 {count} 步已折叠",
     # --- Truncation (extracted from payload_truncator.py) ---
     "truncation_suffix": "…(已截断)",
     "truncation_warning_with_cmd": "⚠️ 内容过长已自动截断。请发送 {cmd_hint} 查看完整内容",

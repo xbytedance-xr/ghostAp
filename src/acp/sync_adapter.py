@@ -1512,6 +1512,7 @@ class SyncACPSession:
         self._loop_thread: Optional[threading.Thread] = None
         self._acp_session: Optional[ACPSession] = None
         self._started = threading.Event()
+        self._prompt_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Persistent watchdog: monitors active prompt future for process death
         self._active_future: Optional[asyncio.Future] = None
@@ -1797,6 +1798,30 @@ class SyncACPSession:
         timeout: Optional[int] = None,
         idle_timeout: Optional[float] = None,
     ) -> PromptResult:
+        """Send one prompt, rejecting concurrent callers on this wrapper."""
+        prompt_lock = getattr(self, "_prompt_lock", None)
+        if prompt_lock is None:
+            prompt_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+            self._prompt_lock = prompt_lock
+        if not prompt_lock.acquire(blocking=False):
+            raise RuntimeError("ACP prompt is already running for this session")
+        try:
+            return self._send_prompt_once(
+                text,
+                on_event=on_event,
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+            )
+        finally:
+            prompt_lock.release()
+
+    def _send_prompt_once(
+        self,
+        text: str,
+        on_event: Optional[Callable[[ACPEvent], None]] = None,
+        timeout: Optional[int] = None,
+        idle_timeout: Optional[float] = None,
+    ) -> PromptResult:
         """Send prompt synchronously, blocking until completion.
 
         A persistent watchdog thread monitors for agent process death and
@@ -1963,6 +1988,10 @@ class SyncACPSession:
     def close(self) -> None:
         """Close session and stop event loop."""
         self._stop_watchdog()
+        active_future = getattr(self, "_active_future", None)
+        if active_future is not None and not active_future.done():
+            active_future.cancel()
+        self._active_future = None
         if self._acp_session and self._loop:
             try:
                 future = asyncio.run_coroutine_threadsafe(

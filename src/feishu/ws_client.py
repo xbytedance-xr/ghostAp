@@ -896,7 +896,13 @@ class FeishuWSClient:
         self._add_reaction(message_id, emoji_type)
 
     def send_lock_conflict_card(
-        self, e, message_id: str, command_text: str, *, retry_count: int = 0,
+        self,
+        e,
+        message_id: str,
+        command_text: str,
+        *,
+        retry_count: int = 0,
+        chat_id: str = "",
     ) -> None:
         """Public facade: send a repo-lock conflict card via the system handler.
 
@@ -906,7 +912,13 @@ class FeishuWSClient:
         """
         handler = self._get_handler("system")
         if handler:
-            handler.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
+            handler.send_lock_conflict_card(
+                e,
+                message_id,
+                command_text,
+                retry_count=retry_count,
+                chat_id=chat_id,
+            )
         else:
             from .handlers.lock_helper import logger as _lock_logger
             _lock_logger.warning("send_lock_conflict_card: _system_handler unavailable, cannot notify user")

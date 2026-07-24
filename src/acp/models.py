@@ -12,11 +12,23 @@ from enum import Enum
 from typing import Optional
 
 
+@dataclass(frozen=True)
+class ACPImageInfo:
+    """Validated raster image emitted by an ACP agent."""
+
+    image_id: str
+    mime_type: str
+    data: str
+    name: str = "任务图片"
+    source_uri: Optional[str] = None
+
+
 class ACPEventType(Enum):
     """Event types produced from ACP session_update notifications."""
 
     TEXT_CHUNK = "text_chunk"
     THOUGHT_CHUNK = "thought_chunk"
+    IMAGE_CHUNK = "image_chunk"
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_UPDATE = "tool_call_update"
     TOOL_CALL_DONE = "tool_call_done"
@@ -59,6 +71,7 @@ class ACPEvent:
 
     event_type: ACPEventType
     text: Optional[str] = None
+    image: Optional[ACPImageInfo] = None
     tool_call: Optional[ToolCallInfo] = None
     plan: Optional[PlanInfo] = None
     source_id: Optional[str] = None

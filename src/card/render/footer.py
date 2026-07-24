@@ -8,6 +8,7 @@ import time
 
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.state.models import CardMetadata, CardState, ContentBlock
+from src.card.tool_display import is_unhelpful_display_label
 from src.card.ui_text import UI_TEXT
 
 from .budget import RenderBudget
@@ -138,6 +139,15 @@ _TERMINAL_DURATION_MARKERS = {
     "archived": "⏸",
     "ttl_expired": "⏱",
 }
+_SUBTASK_TERMINAL_STATUS = {
+    "completed": "✅ 已完成",
+    "failed": "❌ 执行失败",
+    "cancelled": "⚪ 已取消",
+    "paused": "⏸ 已暂停",
+    "awaiting_approval": "⏳ 等待确认",
+    "archived": "📦 已封存",
+    "blocked": "⛔ 已阻塞",
+}
 
 
 def _format_duration(seconds: float) -> str:
@@ -188,17 +198,8 @@ def render_now_tool_hint(tool) -> str:
 
 
 def render_subagent_badge(metadata: CardMetadata) -> str:
-    """Render the v2 footer's compact subagent badge."""
-    if not metadata.is_subagent:
-        return ""
-    sub_parts = ["🧬 sub"]
-    if metadata.model_name:
-        sub_parts.append(f"model: {metadata.model_name}")
-    if metadata.tool_name:
-        sub_parts.append(f"tool: {metadata.tool_name}")
-    if metadata.parent_card_seq:
-        sub_parts.append(f"from #{metadata.parent_card_seq}")
-    return " · ".join(sub_parts)
+    """Retain the public helper while child identity lives in the header."""
+    return ""
 
 
 def build_footer_atoms(state: CardState) -> list[RenderAtom]:
@@ -208,26 +209,25 @@ def build_footer_atoms(state: CardState) -> list[RenderAtom]:
     ``render_footer`` because footer elements are appended only on the final
     page. This helper centralizes the v2 footer text contract so that both
     the atoms path and the render path emit the same user-visible text set
-    (tool hint, subagent badge, frozen continuation).
+    (main-card tool hint and frozen continuation).
     """
     atoms: list[RenderAtom] = []
 
-    # Tool hint — mirrors render_footer's ⚙ tool hint line
-    running_tool = _find_running_tool(state)
-    tool_hint = render_now_tool_hint(running_tool)
-    if tool_hint:
-        atom = RenderAtom(kind="text", content=tool_hint, node_count=1)
-        atom.byte_size = estimate_atom_size(atom)
-        atoms.append(atom)
-
-    subagent_badge = render_subagent_badge(state.metadata)
-    if subagent_badge:
-        atom = RenderAtom(kind="text", content=subagent_badge, node_count=1)
-        atom.byte_size = estimate_atom_size(atom)
-        atoms.append(atom)
+    # Child cards already show their active action and relationship above.
+    if not state.metadata.is_subagent:
+        running_tool = _find_running_tool(state)
+        tool_hint = render_now_tool_hint(running_tool)
+        if tool_hint:
+            atom = RenderAtom(kind="text", content=tool_hint, node_count=1)
+            atom.byte_size = estimate_atom_size(atom)
+            atoms.append(atom)
 
     # Frozen continuation hint — mirrors render_footer's continuation line
-    if state.metadata.frozen and state.metadata.continuation_seq > 0:
+    if (
+        not state.metadata.is_subagent
+        and state.metadata.frozen
+        and state.metadata.continuation_seq > 0
+    ):
         next_seq = state.metadata.continuation_seq + 1
         continuation_text = UI_TEXT["card_footer_frozen_continuation"].format(next_seq=next_seq)
         atom = RenderAtom(kind="text", content=continuation_text, node_count=1)
@@ -242,7 +242,7 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
 
     Layout order:
       1. hr separator
-      2. ⚙ tool hint (when active tool exists)
+      2. ⚙ tool hint (when an active tool exists on a main card)
       3. Status text + progress merged (notation size)
       4. Tool/model info line
       5. Duration (terminal states show final, running states show elapsed)
@@ -253,10 +253,15 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     elements: list[dict] = []
     is_final_terminal = state.terminal in _FINAL_TERMINAL_STATUSES
     running_spec_elapsed: float | None = None
+    running_subtask_elapsed: float | None = None
     if state.metadata.engine_type == "spec" and not is_final_terminal:
         total_elapsed = _total_elapsed_from_session(state)
         if total_elapsed is not None and total_elapsed >= 1:
             running_spec_elapsed = total_elapsed
+    elif state.metadata.is_subagent and not is_final_terminal:
+        total_elapsed = _total_elapsed_from_session(state)
+        if total_elapsed is not None and total_elapsed >= 1:
+            running_subtask_elapsed = total_elapsed
 
     # Determine if we have any status/progress content to show
     has_status_content = state.footer.status is not None
@@ -266,13 +271,22 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         or state.metadata.model_name
         or state.footer.duration_seconds is not None
         or running_spec_elapsed is not None
+        or running_subtask_elapsed is not None
     )
     # Check for active tool hint
     running_tool = _find_running_tool(state)
-    tool_hint = render_now_tool_hint(running_tool) if running_tool else ""
+    tool_hint = (
+        render_now_tool_hint(running_tool)
+        if running_tool and not state.metadata.is_subagent
+        else ""
+    )
     has_tool_hint = bool(tool_hint)
     # Check for context line (working_dir + engine phase info moved from header)
-    context_line = _render_context_line(state)
+    context_line = (
+        None
+        if state.metadata.is_subagent
+        else _render_context_line(state)
+    )
     has_context = bool(context_line)
 
     if not has_status_content and not has_meta_content and not has_tool_hint and not has_context:
@@ -293,9 +307,26 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         )
 
     status_text = state.footer.status_text or ""
+    if state.metadata.is_subagent:
+        display_terminal = "archived" if state.metadata.frozen else state.terminal
+        status_text = _SUBTASK_TERMINAL_STATUS.get(
+            display_terminal,
+            status_text,
+        )
+        if (
+            display_terminal == "blocked"
+            and state.engine_ext
+            and state.engine_ext.blocked_reason
+            and not is_unhelpful_display_label(state.engine_ext.blocked_reason)
+        ):
+            reason = state.engine_ext.blocked_reason
+            if len(reason) > 60:
+                reason = f"{reason[:59]}…"
+            status_text = f"{status_text} · {reason}"
+    show_progress = not state.metadata.is_subagent
 
     # Progress rendering: merge status + progress bar into one line (only when status is active)
-    if has_status_content and state.footer.progress_pct is not None:
+    if has_status_content and show_progress and state.footer.progress_pct is not None:
         bar_color = _ENGINE_PROGRESS_COLOR.get(state.metadata.engine_type or "", "blue")
         mobile_segs = MOBILE_SEGMENTS if (budget is None or budget.mobile) else None
         bar_text = render_progress_bar(state.footer.progress_pct, color=bar_color, mobile_segments=mobile_segs)
@@ -319,7 +350,7 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         elements.append(
             {"tag": "markdown", "content": content, "text_size": "notation"}
         )
-    elif has_status_content and state.footer.progress is not None:
+    elif has_status_content and show_progress and state.footer.progress is not None:
         # Plain progress text merged with status
         if status_text:
             content = f"{status_text} · {state.footer.progress}"
@@ -340,10 +371,18 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
 
     # Tool/model info line + duration (combined into one line)
     meta_parts = []
-    if state.metadata.tool_name:
-        meta_parts.append(f"🔧 {state.metadata.tool_name}")
-    if state.metadata.model_name:
-        meta_parts.append(f"🧩 {state.metadata.model_name}")
+    tool_name = state.metadata.tool_name
+    model_name = state.metadata.model_name
+    if tool_name and not (
+        state.metadata.is_subagent
+        and is_unhelpful_display_label(tool_name)
+    ):
+        meta_parts.append(f"🔧 {tool_name}")
+    if model_name and not (
+        state.metadata.is_subagent
+        and is_unhelpful_display_label(model_name)
+    ):
+        meta_parts.append(f"🧩 {model_name}")
 
     # Duration: terminal states use final duration_seconds; running states compute elapsed.
     # Spec progress can start well after the engine starts, so its footer uses
@@ -357,6 +396,8 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     elif running_spec_elapsed is not None:
         duration_str = _format_duration(running_spec_elapsed)
         duration_label = UI_TEXT.get("card_footer_elapsed_total_fmt", "已执行 {duration}").format(duration=duration_str)
+    elif running_subtask_elapsed is not None:
+        duration_str = _format_duration(running_subtask_elapsed)
     elif state.footer.progress_started_at is not None and not is_final_terminal:
         elapsed = time.monotonic() - state.footer.progress_started_at
         if elapsed >= 1:
@@ -370,21 +411,25 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             {"tag": "markdown", "content": " · ".join(meta_parts), "text_size": "notation"}
         )
 
-    subagent_badge = render_subagent_badge(state.metadata)
-    if subagent_badge:
-        elements.append(
-            {"tag": "markdown", "content": subagent_badge, "text_size": "notation"}
-        )
-
     # Blocked reason as visible text below footer status
-    if state.terminal == "blocked" and state.engine_ext and state.engine_ext.blocked_reason:
+    if (
+        not state.metadata.is_subagent
+        and state.terminal == "blocked"
+        and state.engine_ext
+        and state.engine_ext.blocked_reason
+    ):
         reason_text = UI_TEXT["card_lifecycle_blocked_reason_fmt"].format(reason=state.engine_ext.blocked_reason)
         elements.append(
             {"tag": "markdown", "content": reason_text, "text_size": "notation"}
         )
 
     # Idle timeout hint — only show when remaining time <= warn_before_seconds
-    if state.terminal == "running" and state.metadata and state.metadata.idle_timeout_seconds:
+    if (
+        not state.metadata.is_subagent
+        and state.terminal == "running"
+        and state.metadata
+        and state.metadata.idle_timeout_seconds
+    ):
         warn_before = state.metadata.warn_before_seconds if hasattr(state.metadata, "warn_before_seconds") and state.metadata.warn_before_seconds else state.metadata.idle_timeout_seconds
         idle_remaining = getattr(state.footer, "idle_remaining_seconds", None)
         show_hint = idle_remaining is not None and idle_remaining <= warn_before
@@ -411,7 +456,11 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         )
 
     # Frozen card continuation hint
-    if state.metadata.frozen and state.metadata.continuation_seq > 0:
+    if (
+        not state.metadata.is_subagent
+        and state.metadata.frozen
+        and state.metadata.continuation_seq > 0
+    ):
         next_seq = state.metadata.continuation_seq + 1
         elements.append(
             {"tag": "markdown", "content": UI_TEXT["card_footer_frozen_continuation"].format(next_seq=next_seq), "text_size": "notation"}

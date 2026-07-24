@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from typing import Any, Callable, Protocol
 
 from ..data.facades import MemoryAccessError, MemoryConflictError, MemoryIntegrityError
@@ -55,6 +56,22 @@ class GroupMemoryPort(Protocol):
 
 
 RegistryProvider = Callable[[], Any]
+_MAX_PROJECTION_ASSEMBLY_ATTEMPTS = 3
+
+
+class _ProjectionHeadChanged(RuntimeError):
+    """Internal signal for a projection race that may settle on retry."""
+
+    def __init__(
+        self,
+        expected: tuple[int, str],
+        actual: tuple[int, str],
+        *,
+        semantic_authority_unchanged: bool = False,
+    ) -> None:
+        super().__init__("projection head changed")
+        self.fingerprint = (*expected, *actual)
+        self.semantic_authority_unchanged = semantic_authority_unchanged
 
 
 class AuthorizedGroupMemoryReader:
@@ -142,62 +159,100 @@ class EmployeeContextService:
     def assemble(self, request: AuthorizedContextRequest) -> AssembledContext:
         if not isinstance(request, AuthorizedContextRequest):
             raise TypeError("request must be AuthorizedContextRequest")
-        with self._condition:
-            if self._admission_closed:
-                raise ContextUnavailableError(ContextUnavailableReason.SOURCE)
-            self._active_assemblies += 1
-        failure_reason: ContextUnavailableReason | None = None
-        try:
-            binding = self._authorize(request)
-            self._require_data_head(binding)
-            l1 = self._data.memory_facade.read_l1(
-                request.agent_id,
-                request.tenant_key,
-                allow_unscoped_legacy=False,
+        with self._assembly_admission():
+            failure_reason: ContextUnavailableReason | None = None
+            projection_changes: list[_ProjectionHeadChanged] = []
+            try:
+                for _attempt in range(
+                    _MAX_PROJECTION_ASSEMBLY_ATTEMPTS
+                ):
+                    try:
+                        return self._assemble_once(request)
+                    except _ProjectionHeadChanged as exc:
+                        projection_changes.append(exc)
+                distinct_changes = {
+                    change.fingerprint for change in projection_changes
+                }
+                if (
+                    any(
+                        change.semantic_authority_unchanged
+                        for change in projection_changes
+                    )
+                    or len(distinct_changes) > 1
+                ):
+                    failure_reason = ContextUnavailableReason.REVISION
+                else:
+                    failure_reason = ContextUnavailableReason.MEMORY
+            except ContextUnavailableError as exc:
+                failure_reason = exc.reason
+            except ProjectedCredentialError:
+                failure_reason = ContextUnavailableReason.CREDENTIALS
+            except ProjectedBindingError:
+                failure_reason = ContextUnavailableReason.SCOPE
+            except (
+                MemoryAccessError,
+                MemoryConflictError,
+                MemoryIntegrityError,
+            ):
+                failure_reason = ContextUnavailableReason.MEMORY
+            except Exception:
+                failure_reason = ContextUnavailableReason.SOURCE
+            raise ContextUnavailableError(failure_reason) from None
+
+    def _assemble_once(
+        self,
+        request: AuthorizedContextRequest,
+    ) -> AssembledContext:
+        binding = self._authorize(request)
+        self._require_data_head(binding)
+        l1 = self._data.memory_facade.read_l1(
+            request.agent_id,
+            request.tenant_key,
+            allow_unscoped_legacy=False,
+        )
+        l2 = self._group_memory.read(request)
+        if l1 is not None and not isinstance(l1, str):
+            raise ContextUnavailableError(ContextUnavailableReason.MEMORY)
+        if not isinstance(l2, str):
+            raise ContextUnavailableError(ContextUnavailableReason.MEMORY)
+        self._require_same_authority(request, binding)
+        with self._source_factory.open(
+            scope=request.to_message_scope(),
+            principal=binding.principal,
+        ) as source:
+            snapshot = EmployeeThreadContext(
+                message_source=source,
+                config=self._config,
+            ).assemble(
+                l1_summary=l1 or "",
+                l2_summary=l2,
+                system_prompt_token_reserve=(
+                    request.system_prompt_token_reserve
+                ),
+                constraints_digest=request.constraints_digest,
             )
-            l2 = self._group_memory.read(request)
-            if l1 is not None and not isinstance(l1, str):
-                raise ContextUnavailableError(ContextUnavailableReason.MEMORY)
-            if not isinstance(l2, str):
-                raise ContextUnavailableError(ContextUnavailableReason.MEMORY)
-            self._require_same_authority(request, binding)
-            with self._source_factory.open(
-                scope=request.to_message_scope(),
-                principal=binding.principal,
-            ) as source:
-                snapshot = EmployeeThreadContext(
-                    message_source=source,
-                    config=self._config,
-                ).assemble(
-                    l1_summary=l1 or "",
-                    l2_summary=l2,
-                    system_prompt_token_reserve=(
-                        request.system_prompt_token_reserve
-                    ),
-                    constraints_digest=request.constraints_digest,
-                )
-            self._require_same_authority(request, binding)
-            return snapshot
-        except ContextUnavailableError as exc:
-            failure_reason = exc.reason
-        except ProjectedCredentialError:
-            failure_reason = ContextUnavailableReason.CREDENTIALS
-        except ProjectedBindingError:
-            failure_reason = ContextUnavailableReason.SCOPE
-        except (MemoryAccessError, MemoryConflictError, MemoryIntegrityError):
-            failure_reason = ContextUnavailableReason.MEMORY
-        except Exception:
-            failure_reason = ContextUnavailableReason.SOURCE
-        finally:
-            with self._condition:
-                self._active_assemblies -= 1
-                self._condition.notify_all()
-        raise ContextUnavailableError(failure_reason) from None
+        self._require_same_authority(request, binding)
+        return snapshot
 
     def stop_admission(self) -> None:
         """Reject new assemblies while allowing already admitted work to drain."""
         with self._condition:
             self._admission_closed = True
+
+    @contextmanager
+    def _assembly_admission(self):
+        with self._condition:
+            if self._admission_closed:
+                raise ContextUnavailableError(
+                    ContextUnavailableReason.SOURCE
+                )
+            self._active_assemblies += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active_assemblies -= 1
+                self._condition.notify_all()
 
     def assemble_canonical_partial(
         self,
@@ -208,6 +263,20 @@ class EmployeeContextService:
     ) -> AssembledContext:
         """Use the anchored ledger only for non-authority enrichment failures."""
 
+        with self._assembly_admission():
+            return self._assemble_canonical_partial(
+                request,
+                warning_reason=warning_reason,
+                causal_event_id=causal_event_id,
+            )
+
+    def _assemble_canonical_partial(
+        self,
+        request: AuthorizedContextRequest,
+        *,
+        warning_reason: ContextUnavailableReason,
+        causal_event_id: str,
+    ) -> AssembledContext:
         if warning_reason not in {
             ContextUnavailableReason.PAGINATION,
             ContextUnavailableReason.ORDERING,
@@ -219,7 +288,12 @@ class EmployeeContextService:
         if self._ledger is None:
             raise ContextUnavailableError(warning_reason)
         binding = self._authorize(request)
-        self._require_data_head(binding)
+        try:
+            self._require_data_head(binding)
+        except _ProjectionHeadChanged:
+            raise ContextUnavailableError(
+                ContextUnavailableReason.REVISION
+            ) from None
         try:
             l1 = self._data.memory_facade.read_l1(
                 request.agent_id,
@@ -230,14 +304,26 @@ class EmployeeContextService:
         except Exception:
             l1 = ""
             l2 = ""
-        self._require_same_authority(request, binding)
-        return self._ledger.assemble_partial(
+        try:
+            self._require_same_authority(request, binding)
+        except _ProjectionHeadChanged:
+            raise ContextUnavailableError(
+                ContextUnavailableReason.REVISION
+            ) from None
+        snapshot = self._ledger.assemble_partial(
             request,
             warning_reason=warning_reason,
             causal_event_id=causal_event_id,
             l1_summary=l1,
             l2_summary=l2,
         )
+        try:
+            self._require_same_authority(request, binding)
+        except _ProjectionHeadChanged:
+            raise ContextUnavailableError(
+                ContextUnavailableReason.REVISION
+            ) from None
+        return snapshot
 
     def drain(self) -> None:
         """Wait until every admitted assembly has released its source lease."""
@@ -268,9 +354,24 @@ class EmployeeContextService:
         expected: ProjectedContextBinding,
     ) -> None:
         current = self._authorize(request)
+        if (
+            current.employee != expected.employee
+            or current.principal != expected.principal
+        ):
+            raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
         self._require_data_head(current)
         if current != expected:
-            raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
+            raise _ProjectionHeadChanged(
+                (
+                    expected.projection_sequence,
+                    expected.projection_hash,
+                ),
+                (
+                    current.projection_sequence,
+                    current.projection_hash,
+                ),
+                semantic_authority_unchanged=True,
+            )
 
     def _require_data_head(self, binding: ProjectedContextBinding) -> None:
         head = self._data.service.get_head()
@@ -278,7 +379,13 @@ class EmployeeContextService:
             head.sequence != binding.projection_sequence
             or head.logical_hash != binding.projection_hash
         ):
-            raise ContextUnavailableError(ContextUnavailableReason.MEMORY)
+            raise _ProjectionHeadChanged(
+                (
+                    binding.projection_sequence,
+                    binding.projection_hash,
+                ),
+                (head.sequence, head.logical_hash),
+            )
 
 
 def _resolve_binding(

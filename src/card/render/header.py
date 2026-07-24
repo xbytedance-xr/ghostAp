@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from src.card.render.banner_computer import format_elapsed
 from src.card.state.models import CardState
+from src.card.themes import TERMINAL_TEMPLATES
+from src.card.tool_display import is_unhelpful_display_label
 from src.utils.text import summarize_question_title
 
 _TOOL_DISPLAY = {
@@ -15,6 +17,22 @@ _TOOL_DISPLAY = {
     "traex": "Traex",
     "ttadk": "TTADK",
 }
+
+_SUBTASK_STATUS_LABELS = {
+    "running": "执行中",
+    "completed": "已完成",
+    "completed_empty": "已完成",
+    "failed": "执行失败",
+    "cancelled": "已取消",
+    "paused": "已暂停",
+    "awaiting_approval": "等待确认",
+    "archived": "已封存",
+    "blocked": "已阻塞",
+    "denied": "已拒绝",
+}
+_SUBTASK_GENERIC_LABELS = frozenset(
+    {"task", "agent", "subagent", "子任务", "子代理"}
+)
 
 
 def render_header(state: CardState, *, page_index: int = 0, total_pages: int = 1) -> dict:
@@ -56,6 +74,13 @@ def _should_render_v2_header(state: CardState) -> bool:
 
 def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int = 1) -> dict:
     metadata = state.metadata
+    if metadata.is_subagent:
+        return _render_subtask_header(
+            state,
+            page_index=page_index,
+            total_pages=total_pages,
+        )
+
     tool_id = metadata.tool_name or metadata.mode_name
     tool_label = _TOOL_DISPLAY.get((tool_id or "").lower(), tool_id or metadata.mode_name or "?")
     project_name = metadata.project_name or state.header.title or "当前项目"
@@ -93,6 +118,73 @@ def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int
     if subtitle:
         result["subtitle"] = {"tag": "plain_text", "content": subtitle}
     return result
+
+
+def _render_subtask_header(
+    state: CardState,
+    *,
+    page_index: int,
+    total_pages: int,
+) -> dict:
+    """Render a child card around task identity rather than internal metadata."""
+    metadata = state.metadata
+    label = _subtask_label(metadata)
+    title = "🧬 子任务"
+    if label:
+        title = f"{title} · {_truncate_title_part(label)}"
+
+    display_terminal = "archived" if metadata.frozen else state.terminal
+    subtitle_parts = [
+        _SUBTASK_STATUS_LABELS.get(display_terminal, "执行中"),
+        f"子卡 #{metadata.card_sequence}",
+    ]
+    if metadata.parent_card_seq:
+        subtitle_parts.append(f"来自主卡 #{metadata.parent_card_seq}")
+    page = _page_label(page_index=page_index, total_pages=total_pages)
+    if page:
+        subtitle_parts.append(page.removeprefix(" · "))
+
+    return {
+        "title": {"tag": "plain_text", "content": title},
+        "subtitle": {
+            "tag": "plain_text",
+            "content": " · ".join(subtitle_parts),
+        },
+        "template": _subtask_header_template(state),
+    }
+
+
+def _subtask_label(metadata) -> str:
+    """Return a human label while keeping child IDs out of the header."""
+    label = (metadata.unit_label or "").strip()
+    unit_id = (metadata.unit_id or "").strip()
+    if not label or label == unit_id:
+        return ""
+
+    for prefix in ("子任务：", "子任务:", "子代理：", "子代理:"):
+        if label.startswith(prefix):
+            label = label[len(prefix):].strip()
+            break
+
+    if unit_id:
+        for prefix in (f"子任务 {unit_id}", f"子代理 {unit_id}"):
+            if label.startswith(prefix):
+                label = label[len(prefix):].lstrip("：: ").strip()
+                break
+    if (
+        label.lower() in _SUBTASK_GENERIC_LABELS
+        or is_unhelpful_display_label(label)
+    ):
+        return ""
+    return label
+
+
+def _subtask_header_template(state: CardState) -> str:
+    if state.metadata.frozen:
+        return TERMINAL_TEMPLATES["archived"]
+    if state.terminal == "running":
+        return "orange"
+    return TERMINAL_TEMPLATES.get(state.terminal, state.header.template)
 
 
 def _title_context_suffix(state: CardState) -> str:
@@ -216,5 +308,5 @@ def _v2_header_template(state: CardState) -> str:
     if metadata.frozen:
         return "grey"
     if metadata.is_subagent:
-        return "orange"
+        return _subtask_header_template(state)
     return state.header.template

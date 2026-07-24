@@ -9,8 +9,10 @@ focused on message routing and rendering.
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 from dataclasses import dataclass as _dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 from ...card.ui_text import UI_TEXT
@@ -63,6 +65,63 @@ class LockHelper:
     def __init__(self, handler: LockHandlerProtocol) -> None:
         self._h = handler
 
+    @staticmethod
+    def resolve_git_lock_root(path: str | None) -> str | None:
+        """Return the nearest Git worktree root, preserving non-Git paths."""
+        if not path:
+            return path
+        try:
+            result = subprocess.run(
+                ["git", "-C", path, "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+            root = (result.stdout or "").strip()
+            if result.returncode != 0 or not root:
+                return LockHelper._find_git_marker_root(path)
+            return str(Path(root).resolve(strict=True))
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return LockHelper._find_git_marker_root(path)
+
+    @staticmethod
+    def _find_git_marker_root(path: str) -> str:
+        """Find the nearest on-disk ``.git`` marker without invoking Git."""
+        try:
+            current = Path(path).resolve(strict=True)
+            if not current.is_dir():
+                return path
+            for candidate in (current, *current.parents):
+                marker = candidate / ".git"
+                if LockHelper._is_git_marker(marker, candidate):
+                    return str(candidate)
+        except OSError:
+            return path
+        return path
+
+    @staticmethod
+    def _is_git_marker(marker: Path, worktree_root: Path) -> bool:
+        """Return whether *marker* names valid Git metadata for a worktree."""
+        if marker.is_dir():
+            return (marker / "HEAD").is_file()
+        if not marker.is_file() or marker.stat().st_size > 4096:
+            return False
+        try:
+            first_line = marker.read_text(encoding="utf-8").partition("\n")[0]
+        except UnicodeError:
+            return False
+        prefix = "gitdir:"
+        if not first_line.casefold().startswith(prefix):
+            return False
+        raw_git_dir = first_line[len(prefix):].strip()
+        if not raw_git_dir:
+            return False
+        git_dir = Path(raw_git_dir)
+        if not git_dir.is_absolute():
+            git_dir = worktree_root / git_dir
+        return (git_dir.resolve(strict=True) / "HEAD").is_file()
+
     # ------------------------------------------------------------------
     # Repo lock: with-lock helper (Event + daemon thread heartbeat)
     # ------------------------------------------------------------------
@@ -80,11 +139,40 @@ class LockHelper:
         """
         from ...thread import get_current_is_p2p
 
+        return self._with_repo_lock_mode(
+            root_path,
+            chat_id,
+            body_func,
+            is_p2p=get_current_is_p2p(),
+        )
+
+    def _with_repo_lock_strict(self, root_path: str, chat_id: str, body_func):
+        """Acquire a real repo lock even when the request came from P2P chat.
+
+        Shell commands can restart the whole service or mutate the same working
+        tree as an active programming task. They therefore must not inherit the
+        general P2P lock-bypass privilege.
+        """
+        return self._with_repo_lock_mode(
+            root_path,
+            chat_id,
+            body_func,
+            is_p2p=False,
+        )
+
+    def _with_repo_lock_mode(
+        self,
+        root_path: str,
+        chat_id: str,
+        body_func,
+        *,
+        is_p2p: bool,
+    ):
+        """Shared lock/heartbeat implementation for bypass and strict modes."""
+
         repo_lock_mgr = getattr(self._h.ctx, "repo_lock_manager", None)
         if not repo_lock_mgr or not root_path:
             return body_func()
-
-        is_p2p = get_current_is_p2p()
 
         from ...utils.heartbeat import RepoLockHeartbeat
 
@@ -173,7 +261,13 @@ class LockHelper:
         try:
             return self._with_repo_lock(root_path, chat_id, body_fn)
         except LockConflictError as e:
-            self.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
+            self.send_lock_conflict_card(
+                e,
+                message_id,
+                command_text,
+                retry_count=retry_count,
+                chat_id=chat_id,
+            )
             return None
 
     # ------------------------------------------------------------------

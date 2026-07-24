@@ -67,6 +67,13 @@ class ToolFailedPayload(TypedDict):
     error: str
 
 
+class ImagePayload(TypedDict):
+    """Payload for IMAGE_ADDED/IMAGE_FAILED events."""
+    image_id: str
+    image_key: NotRequired[str]
+    alt: str
+
+
 class PlanUpdatedPayload(TypedDict):
     """Payload for PLAN_UPDATED event."""
     content: str

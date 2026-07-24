@@ -64,7 +64,10 @@ class DeepStreamProcessor(BaseStreamProcessor):
         self._subagent_orchestrator = TaskOrchestrator(
             chat_id=chat_id,
             session_creator=self._create_subagent_session,
-            bridge_factory=ACPStreamBridge,
+            bridge_factory=lambda session: ACPStreamBridge(
+                session,
+                image_uploader=self._image_uploader,
+            ),
             max_task_cards=max(1, int(settings.card.max_task_cards)),
         )
         self._subagent_orchestrator.set_thinking_session(rotator.current)
@@ -212,16 +215,44 @@ class DeepStreamProcessor(BaseStreamProcessor):
                 completed=completed,
                 total=len(tasks),
             )
-            self._finalize_main_tasks(success=False)
-            self._rotator.dispatch(CardEvent.failed(
-                failure,
-                duration_seconds=duration_seconds,
-            ))
-            self._subagent_orchestrator.close(
-                terminal_status="failed",
-                summary=failure,
-            )
+            if deep_project.status == DeepProjectStatus.PAUSED:
+                self._rotator.dispatch(CardEvent.cancelled(reason=failure))
+                self._cancel_unfinished_subagent_cards(reason=failure)
+            else:
+                self._finalize_main_tasks(success=False)
+                self._rotator.dispatch(CardEvent.failed(
+                    failure,
+                    duration_seconds=duration_seconds,
+                ))
+                self._subagent_orchestrator.close(
+                    terminal_status="failed",
+                    summary=failure,
+                )
         self._renderer._current_session = None
+
+    def _cancel_unfinished_subagent_cards(self, *, reason: str) -> None:
+        """Cancel open child cards while preserving their existing terminals."""
+        orchestrator = self._subagent_orchestrator
+        with orchestrator._lock:
+            sessions = [
+                (task_id, session)
+                for task_id, session in orchestrator._sessions.items()
+                if task_id not in orchestrator._finalized_task_ids
+            ]
+            orchestrator._finalized_task_ids.update(
+                task_id for task_id, _session in sessions
+            )
+
+        for task_id, session in sessions:
+            try:
+                session.dispatch(CardEvent.cancelled(reason=reason))
+            except Exception:
+                logger.debug(
+                    "Deep failed to cancel subagent card task_id=%s",
+                    task_id,
+                    exc_info=True,
+                )
+        orchestrator.close()
 
     def on_error(self, error: str) -> None:
         self._heartbeat.stop()

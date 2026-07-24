@@ -1082,6 +1082,45 @@ class TestTTADKModeHandler:
         callbacks.hooks[0].on_terminal(subagent_state, "completed")
         add_reaction.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("stop_reason", "should_react"),
+        [
+            ("end_turn", True),
+            ("max_turn_requests", False),
+            ("cancelled", False),
+        ],
+    )
+    def test_non_streaming_fallback_reacts_only_after_completed_result(
+        self,
+        stop_reason,
+        should_react,
+    ):
+        from src.acp.models import PromptResult
+
+        h, _ = self._make()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.add_reaction = MagicMock()
+        session = MagicMock()
+        session.send_prompt.return_value = PromptResult(
+            stop_reason=stop_reason,
+            text="result",
+        )
+
+        h._handle_response_non_streaming(
+            "origin_msg",
+            "chat_1",
+            "task",
+            session,
+            None,
+            "/repo",
+        )
+
+        if should_react:
+            h.add_reaction.assert_called_once_with("origin_msg", "PARTY")
+        else:
+            h.add_reaction.assert_not_called()
+
     def test_enter_mode_builds_ttadk_entry_card(self):
         ctx = _make_handler_context()
         ctx.mode_manager.is_ttadk_mode.return_value = False
@@ -2185,14 +2224,19 @@ class TestSystemHandlerShellRepoLock:
             root_path="/repo",
             last_active_time=1.0,
         )
-        h.lock_helper._with_repo_lock = MagicMock(side_effect=err)
+        h.lock_helper._with_repo_lock_strict = MagicMock(side_effect=err)
 
         with patch("src.sandbox.executor.SandboxExecutor.execute") as mock_execute:
             result = h.execute_shell_and_reply("msg-1", "chat-1", "pwd", "/repo", None)
 
         assert result is None
         mock_execute.assert_not_called()
-        h.send_lock_conflict_card.assert_called_once_with(err, "msg-1", "pwd", chat_id="chat-1")
+        h.send_lock_conflict_card.assert_called_once_with(
+            err,
+            "msg-1",
+            "pwd",
+            chat_id="chat-1",
+        )
         h.reply_card.assert_not_called()
 
 
@@ -2744,6 +2788,7 @@ class TestProgrammingHandlerLockConflict:
         err = h.send_lock_conflict_card.call_args[0][0]
         assert isinstance(err, LockConflictError)
         assert err.holder_chat_id == "chat_other"
+        assert h.send_lock_conflict_card.call_args.kwargs["chat_id"] == "chat-1"
 
 
 # ---------------------------------------------------------------------------

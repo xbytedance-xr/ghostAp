@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEventRenderer
 from ...acp.manager import ACPSessionManager
+from ...acp.outcome import PromptOutcome, classify_prompt_result
 from ...acp.providers import normalize_acp_model_name
 from ...agent_session import SyncSession
 from ...card import CardBuilder
@@ -32,6 +33,15 @@ if TYPE_CHECKING:
     from ...project import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+
+def _append_execution_notice(text: str, notice: str) -> str:
+    """Append one terminal diagnostic without duplicating backend output."""
+    content = str(text or "").strip()
+    notice = str(notice or "").strip()
+    if not notice or notice in content:
+        return content
+    return f"{content}\n\n{notice}" if content else notice
 
 
 def build_programming_session_callbacks(
@@ -791,7 +801,12 @@ class ProgrammingModeHandler(BaseHandler):
         try:
             _, repo_lock_mgr, needs_release = self._acquire_repo_lock(root_path, chat_id)
         except LockConflictError as err:
-            self.send_lock_conflict_card(err, message_id, text)
+            self.send_lock_conflict_card(
+                err,
+                message_id,
+                text,
+                chat_id=chat_id,
+            )
             return
 
         try:
@@ -908,7 +923,12 @@ class ProgrammingModeHandler(BaseHandler):
                 callbacks=subagent_callbacks,
             )
 
-        prog_session = ProgrammingCardSession(card_session, subagent_session_factory=_create_subagent)
+        prog_session = ProgrammingCardSession(
+            card_session,
+            subagent_session_factory=_create_subagent,
+            base_metadata=metadata,
+            image_uploader=self.upload_acp_image,
+        )
 
         # Start card (creates in Feishu)
         try:
@@ -991,20 +1011,42 @@ class ProgrammingModeHandler(BaseHandler):
                 logger.warning("card session event处理失败: %s", str(e), exc_info=True)
 
         final_response = ""
+        prompt_outcome = PromptOutcome.INCOMPLETE
+        prompt_stop_reason = "exception"
         try:
             result = session.send_prompt(text, on_event=on_event, timeout=timeout)
-            prog_session.finish(fallback_text=(result.text if result else ""))
-            final_response = prog_session.get_final_text()
-            # Fallback if no text captured
-            if not final_response and result and result.text:
-                final_response = result.text
-            if not final_response:
-                final_response = UI_TEXT["mode_exec_complete"]
+            assessment = classify_prompt_result(result)
+            prompt_outcome = assessment.outcome
+            prompt_stop_reason = assessment.stop_reason
+            streamed_response = prog_session.get_final_text()
+            result_text = (getattr(result, "text", None) or "").strip()
+            response_text = streamed_response or result_text
+            if assessment.outcome is PromptOutcome.COMPLETED:
+                prog_session.finish(fallback_text=result_text)
+                final_response = (
+                    prog_session.get_final_text()
+                    or result_text
+                    or UI_TEXT["mode_exec_complete"]
+                )
+            elif assessment.outcome is PromptOutcome.CANCELLED:
+                notice = UI_TEXT["mode_exec_cancelled_msg"].format(
+                    reason=assessment.detail,
+                )
+                final_response = _append_execution_notice(response_text, notice)
+                prog_session.cancel(reason=assessment.stop_reason)
+            else:
+                notice = UI_TEXT["mode_exec_incomplete_msg"].format(
+                    reason=assessment.detail,
+                )
+                final_response = _append_execution_notice(response_text, notice)
+                prog_session.fail(notice)
         except TimeoutError as e:
+            prompt_stop_reason = "timeout"
             final_response = UI_TEXT["mode_exec_timeout_msg"].format(error=get_error_detail(e))
             log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
             prog_session.fail(final_response)
         except Exception as e:
+            prompt_stop_reason = "exception"
             final_response = UI_TEXT["mode_exec_exception_msg"].format(error=get_error_detail(e))
             log_exception(logger, f"{self.mode_name} ACP执行异常", e)
             prog_session.fail(final_response)
@@ -1042,7 +1084,14 @@ class ProgrammingModeHandler(BaseHandler):
                 if final_response:
                     self.reply_text(message_id, final_response)
 
-        logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
+        logger.info(
+            "%s ACP输出结束: outcome=%s, stop_reason=%s, 事件数=%d, 最终长度=%d",
+            self.mode_name,
+            prompt_outcome.value,
+            prompt_stop_reason,
+            update_count[0],
+            len(final_response),
+        )
 
         # Post-processing (non-critical, must not block emoji reaction)
         try:
@@ -1063,8 +1112,6 @@ class ProgrammingModeHandler(BaseHandler):
                 )
         except Exception as e:
             logger.warning("编程后处理异常(不影响表情回复): %s", e, exc_info=True)
-
-        self.add_reaction(message_id, EmojiReaction.on_coco_response())
 
         if card_message_id and project:
             self.register_message_project(card_message_id, project)
@@ -1104,14 +1151,74 @@ class ProgrammingModeHandler(BaseHandler):
 
         try:
             renderer = ACPEventRenderer()
-            result = session.send_prompt(text, on_event=None, timeout=timeout)
+            image_keys: list[str] = []
+            seen_image_ids: set[str] = set()
+            image_failures = [0]
+
+            def on_event(event):
+                from ...acp.models import ACPEventType
+
+                if event.event_type is ACPEventType.IMAGE_CHUNK:
+                    image = event.image
+                    if image is None or image.image_id in seen_image_ids:
+                        return
+                    seen_image_ids.add(image.image_id)
+                    image_key = self.upload_acp_image(image)
+                    if image_key:
+                        image_keys.append(image_key)
+                    else:
+                        image_failures[0] += 1
+                    return
+                renderer.process_event(event)
+
+            result = session.send_prompt(text, on_event=on_event, timeout=timeout)
+            assessment = classify_prompt_result(result)
             final_response = (
                 (getattr(result, "text", None) or "").strip()
                 or renderer.get_final_content()
-                or UI_TEXT["mode_exec_complete"]
             )
+            if assessment.outcome is PromptOutcome.COMPLETED:
+                final_response = final_response or UI_TEXT["mode_exec_complete"]
+                response_title = f"{self.mode_name} · {UI_TEXT['mode_exec_complete']}"
+            elif assessment.outcome is PromptOutcome.CANCELLED:
+                final_response = _append_execution_notice(
+                    final_response,
+                    UI_TEXT["mode_exec_cancelled_msg"].format(
+                        reason=assessment.detail,
+                    ),
+                )
+                response_title = (
+                    f"{self.mode_name} · {UI_TEXT['mode_exec_cancelled_title']}"
+                )
+            else:
+                final_response = _append_execution_notice(
+                    final_response,
+                    UI_TEXT["mode_exec_incomplete_msg"].format(
+                        reason=assessment.detail,
+                    ),
+                )
+                response_title = (
+                    f"{self.mode_name} · {UI_TEXT['mode_exec_incomplete_title']}"
+                )
             response_with_dir = f"{final_response}\n\n---\n{UI_TEXT['mode_working_dir_label'].format(path=global_working_dir)}"
-            self.reply_text(message_id, response_with_dir)
+            if image_failures[0]:
+                response_with_dir += "\n\n🖼️ 部分图片产物暂时无法展示。"
+            if image_keys:
+                _, card_content = CardBuilder.build_project_response_card(
+                    project,
+                    response_title,
+                    response_with_dir,
+                    show_buttons=bool(project),
+                    image_keys=image_keys,
+                )
+                self.reply_card(message_id, card_content)
+            else:
+                self.reply_text(message_id, response_with_dir)
+            if assessment.outcome is PromptOutcome.COMPLETED:
+                self.add_reaction(
+                    message_id,
+                    EmojiHook.SUCCESS_EMOJI_DEFAULT,
+                )
         except TimeoutError as e:
             log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
             msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_timeout_title"], project=project)
@@ -1123,8 +1230,6 @@ class ProgrammingModeHandler(BaseHandler):
             _hb_stop.set()
             if _hb is not None:
                 _hb.join(timeout=2)
-
-        self.add_reaction(message_id, EmojiReaction.on_coco_response())
 
     # ------------------------------------------------------------------
     # show_info

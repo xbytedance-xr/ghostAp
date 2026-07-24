@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from src.card.state.models import TaskListBlock
 from src.card.themes import PANEL_STYLES
+from src.card.tool_display import is_unhelpful_display_label
 
 if TYPE_CHECKING:
     from src.card.events.payloads import TaskSnapshotPayload
@@ -25,6 +26,8 @@ _COMPLETED_STATUSES = frozenset({"completed", "done"})
 _FAILED_STATUSES = frozenset({"failed", "cancelled"})
 
 _TASK_BUCKET_VISIBLE_LIMIT = 50
+_COMPACT_BUCKET_VISIBLE_LIMIT = 2
+_COMPACT_TASK_NAME_CHARS = 48
 
 
 def group_tasks(plan_or_tasks) -> tuple[list, list, list]:
@@ -50,8 +53,8 @@ def render_task_list_panel(block: TaskListBlock, *, compact: bool = False) -> di
     """Render the task list panel with progress summary.
 
     Returns None if tasks is empty (no panel rendered).
-    Compact mode keeps the same three always-open groups while applying the
-    same height-saving downgrade rules as the full panel.
+    Compact mode renders a collapsed, neutral child-card summary with bounded
+    active, recently-ended, and upcoming task context.
     Current task is highlighted with bold + arrow prefix.
     """
     tasks = block.tasks
@@ -61,6 +64,13 @@ def render_task_list_panel(block: TaskListBlock, *, compact: bool = False) -> di
     current_id = block.current_task_id
     total = len(tasks)
     completed_count = sum(1 for t in tasks if str(t.get("status")) in _COMPLETED_STATUSES)
+
+    if compact:
+        return _render_compact_task_list(
+            tasks,
+            current_id=current_id,
+            completed_count=completed_count,
+        )
 
     lines = _build_v2_task_lines(tasks, current_id)
     content = "\n".join(lines)
@@ -87,6 +97,141 @@ def render_task_list_panel(block: TaskListBlock, *, compact: bool = False) -> di
         "padding": PANEL_STYLES["padding_standard"],
         "elements": [{"tag": "markdown", "content": content}],
     }
+
+
+def _render_compact_task_list(
+    tasks: tuple[TaskSnapshotPayload, ...],
+    *,
+    current_id: str,
+    completed_count: int,
+) -> dict:
+    """Render the child-card task context without competing with its result."""
+    total = len(tasks)
+    in_progress, ended, pending = group_tasks(tasks)
+    current = next((task for task in tasks if _task_id(task) == current_id), None)
+    if current is None:
+        current = (
+            (in_progress[0] if in_progress else None)
+            or (pending[0] if pending else None)
+            or (ended[-1] if ended else None)
+        )
+    effective_current_id = _task_id(current) if current is not None else current_id
+
+    header_parts = [f"整体 {completed_count}/{total}"]
+    if current is not None:
+        current_step = next(
+            (
+                index
+                for index, task in enumerate(tasks, start=1)
+                if _task_id(task) == _task_id(current)
+            ),
+            1,
+        )
+        header_parts.append(
+            f"当前 {current_step}/{total} "
+            f"{_display_task_name(current, max_chars=_COMPACT_TASK_NAME_CHARS)}"
+        )
+    header_title = f"**{' · '.join(header_parts)}**"
+
+    lines = _build_compact_task_lines(
+        tasks,
+        current_id=effective_current_id,
+        in_progress=in_progress,
+        ended=ended,
+        pending=pending,
+    )
+
+    return {
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {
+            "title": {"tag": "markdown", "content": header_title},
+            "vertical_align": "center",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {
+            "color": PANEL_STYLES["border_normal"],
+            "corner_radius": PANEL_STYLES["corner_radius"],
+        },
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_compact"],
+        "elements": [{"tag": "markdown", "content": "\n".join(lines)}],
+    }
+
+
+def _build_compact_task_lines(
+    tasks: tuple[TaskSnapshotPayload, ...],
+    *,
+    current_id: str,
+    in_progress: list[TaskSnapshotPayload],
+    ended: list[TaskSnapshotPayload],
+    pending: list[TaskSnapshotPayload],
+) -> list[str]:
+    """Build a bounded child-card progress body."""
+    total = len(tasks)
+    lines: list[str] = []
+
+    if in_progress:
+        lines.append(f"**进行中 ({len(in_progress)})**")
+        active_visible = in_progress[:_COMPACT_BUCKET_VISIBLE_LIMIT]
+        lines.extend(
+            _format_task_line(
+                task,
+                current_id,
+                tasks,
+                total,
+                max_name_chars=_COMPACT_TASK_NAME_CHARS,
+            )
+            for task in active_visible
+        )
+        if len(active_visible) < len(in_progress):
+            lines.append(
+                f"　…还有 {len(in_progress) - len(active_visible)} 个进行中"
+            )
+
+    if ended:
+        ended_visible = ended[-_COMPACT_BUCKET_VISIBLE_LIMIT:]
+        failed_count = sum(
+            1 for task in ended if _task_status(task) in _FAILED_STATUSES
+        )
+        ended_label = "已结束" if failed_count else "已完成"
+        lines.append(
+            f"**{ended_label} ({len(ended)}) · 最近 {len(ended_visible)} 项**"
+        )
+        lines.extend(
+            _format_done_line(
+                task,
+                max_name_chars=_COMPACT_TASK_NAME_CHARS,
+            )
+            for task in ended_visible
+        )
+        if len(ended_visible) < len(ended):
+            lines.append(
+                f"　…另有 {len(ended) - len(ended_visible)} 个已结束"
+            )
+
+    if pending:
+        lines.append(f"⏳ **未处理 ({len(pending)})**")
+        pending_visible = pending[:_COMPACT_BUCKET_VISIBLE_LIMIT]
+        lines.extend(
+            _format_pending_line(
+                task,
+                max_name_chars=_COMPACT_TASK_NAME_CHARS,
+            )
+            for task in pending_visible
+        )
+        if len(pending_visible) < len(pending):
+            lines.append(
+                f"　…还有 {len(pending) - len(pending_visible)} 个"
+            )
+
+    return lines
 
 
 def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str) -> list[str]:
@@ -128,13 +273,20 @@ def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str
     return lines
 
 
-def _format_task_line(task: TaskSnapshotPayload, current_id: str, tasks: tuple[TaskSnapshotPayload, ...], total: int) -> str:
+def _format_task_line(
+    task: TaskSnapshotPayload,
+    current_id: str,
+    tasks: tuple[TaskSnapshotPayload, ...],
+    total: int,
+    *,
+    max_name_chars: int | None = None,
+) -> str:
     """Format a single task line with step number (step/total).
 
     Current in_progress task is highlighted with bold + arrow prefix.
     """
     task_id = _task_id(task)
-    name = _task_name(task)
+    name = _display_task_name(task, max_chars=max_name_chars)
     status = _task_status(task)
     icon = _STATUS_ICONS.get(status, "⏳")
     step = next((idx + 1 for idx, item in enumerate(tasks) if _task_id(item) == task_id), 1)
@@ -145,14 +297,24 @@ def _format_task_line(task: TaskSnapshotPayload, current_id: str, tasks: tuple[T
     return f"　{icon} {step_num} {name}"
 
 
-def _format_done_line(task) -> str:
+def _format_done_line(
+    task,
+    *,
+    max_name_chars: int | None = None,
+) -> str:
     status = _task_status(task)
     icon = _STATUS_ICONS.get(status, "✅")
-    return f"　{icon} ~~{_task_name(task)}~~"
+    name = _display_task_name(task, max_chars=max_name_chars)
+    return f"　{icon} ~~{name}~~"
 
 
-def _format_pending_line(task) -> str:
-    return f"　○ {_task_name(task)}"
+def _format_pending_line(
+    task,
+    *,
+    max_name_chars: int | None = None,
+) -> str:
+    name = _display_task_name(task, max_chars=max_name_chars)
+    return f"　○ {name}"
 
 
 def _task_id(task) -> str:
@@ -165,6 +327,21 @@ def _task_name(task) -> str:
     if isinstance(task, dict):
         return str(task.get("name") or task.get("title") or "未命名任务")
     return str(getattr(task, "name", None) or getattr(task, "title", None) or "未命名任务")
+
+
+def _display_task_name(
+    task,
+    *,
+    max_chars: int | None = None,
+) -> str:
+    name = _task_name(task)
+    if max_chars is None:
+        return name
+    if is_unhelpful_display_label(name):
+        name = "子任务"
+    if max_chars <= 0 or len(name) <= max_chars:
+        return name
+    return f"{name[: max_chars - 1]}…"
 
 
 def _task_status(task) -> str:

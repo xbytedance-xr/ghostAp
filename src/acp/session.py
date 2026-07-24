@@ -206,7 +206,10 @@ class ACPSession:
         self._client: Optional[GhostAPClient] = None
         self._tool_filter: Optional[Callable[[str, dict | None], bool]] = None
         self._event_handler: Optional[Callable[[ACPEvent], None]] = None
+        self._event_generation = 0
         self._handler_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._prompt_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._closing = False
 
     @property
     def session_id(self) -> Optional[str]:
@@ -218,6 +221,8 @@ class ACPSession:
 
     async def start(self) -> str:
         """Start agent process and establish ACP connection. Returns session_id."""
+        with self._handler_lock:
+            self._closing = False
         settings = get_settings()
         client = GhostAPClient(
             on_event=self._dispatch_event,
@@ -351,7 +356,23 @@ class ACPSession:
             return False
 
     async def prompt(self, text: str, on_event: Optional[Callable[[ACPEvent], None]] = None) -> PromptResult:
-        """Send a prompt and stream events. Returns PromptResult when done."""
+        """Send one prompt, rejecting concurrent use of the same ACP session."""
+        if not self._prompt_lock.acquire(blocking=False):
+            raise RuntimeError("ACP prompt is already running for this session")
+        try:
+            with self._handler_lock:
+                if self._closing:
+                    raise RuntimeError("ACP session is closing")
+            return await self._prompt_once(text, on_event=on_event)
+        finally:
+            self._prompt_lock.release()
+
+    async def _prompt_once(
+        self,
+        text: str,
+        on_event: Optional[Callable[[ACPEvent], None]] = None,
+    ) -> PromptResult:
+        """Run a prompt while the cross-thread prompt ownership gate is held."""
         if not self._conn or not self._session_id:
             raise RuntimeError("Session not started. Call start() first.")
 
@@ -360,8 +381,19 @@ class ACPSession:
         # Collector aggregates text/tool calls/plan/modified_files.
         collected_tool_calls: dict[str, Any] = {}
         result = PromptResult(stop_reason="")
+        last_event_monotonic = [time.monotonic()]
+        image_snapshot: object = {}
 
         def _collector(ev: ACPEvent):
+            with self._handler_lock:
+                is_current_generation = (
+                    self._event_generation == event_generation
+                    and self._event_handler is _collector
+                )
+            if not is_current_generation:
+                return
+
+            last_event_monotonic[0] = time.monotonic()
             try:
                 if ev.event_type == ACPEventType.TEXT_CHUNK:
                     result.add_text(ev.text or "")
@@ -387,31 +419,53 @@ class ACPSession:
                     logger.warning("[ACP] on_event callback error: %s", get_error_detail(exc))
 
         with self._handler_lock:
+            self._event_generation += 1
+            event_generation = self._event_generation
             self._event_handler = _collector
-        self._state.message_count += 1
-
-        self._state.last_active = time.time()
-
-        response: PromptResponse = await self._conn.prompt(
-            session_id=self._session_id,
-            prompt=[text_block(text)],
-        )
-
-        # Race guard: some ACP agents (or stdio scheduling) may deliver the final
-        # PromptResponse slightly before the last streaming `session/update` messages.
-        # If we clear the handler immediately, late TEXT_CHUNKs can be dropped.
-        # We keep a tiny grace window only when no text has been observed yet.
         try:
-            if not (result.text or ""):
-                grace_s = 0.2 if "tui2acp" in self._agent_cmd else 0.05
-                deadline = time.time() + grace_s
-                while time.time() < deadline and not (result.text or ""):
-                    await asyncio.sleep(0.005)
-        except Exception:
-            logger.debug("grace window wait failed", exc_info=True)
+            self._state.message_count += 1
 
-        with self._handler_lock:
-            self._event_handler = None
+            self._state.last_active = time.time()
+            image_snapshot = (
+                self._client.snapshot_local_images()
+                if self._client is not None
+                else {}
+            )
+
+            response: PromptResponse = await self._conn.prompt(
+                session_id=self._session_id,
+                prompt=[text_block(text)],
+            )
+
+            # Race guard: some ACP agents (or stdio scheduling) may deliver the final
+            # PromptResponse slightly before their last `session/update`. Drain until
+            # the stream has been quiet for a short window so late text *and media*
+            # arrive before the handler is cleared and the card becomes terminal.
+            try:
+                quiet_s = 0.2 if "tui2acp" in self._agent_cmd else 0.05
+                max_drain_s = 0.6 if "tui2acp" in self._agent_cmd else 0.15
+                drain_started = time.monotonic()
+                while time.monotonic() - drain_started < max_drain_s:
+                    quiet_for = time.monotonic() - max(
+                        last_event_monotonic[0],
+                        drain_started,
+                    )
+                    if quiet_for >= quiet_s:
+                        break
+                    await asyncio.sleep(min(0.005, quiet_s - quiet_for))
+            except Exception:
+                logger.debug("grace window wait failed", exc_info=True)
+
+        finally:
+            if self._client is not None:
+                self._client.release_local_image_snapshot(image_snapshot)
+            with self._handler_lock:
+                if (
+                    self._event_generation == event_generation
+                    and self._event_handler is _collector
+                ):
+                    self._event_handler = None
+                    self._event_generation += 1
 
         # Finalize aggregated tool call list (preserve insertion order by first-seen)
         try:
@@ -420,7 +474,7 @@ class ACPSession:
         except Exception:
             logger.debug("[ACP:%s] tool_calls finalization failed", self._agent_cmd, exc_info=True)
 
-        result.stop_reason = response.stop_reason or "end_turn"
+        result.stop_reason = str(getattr(response, "stop_reason", "") or "")
 
         # Best-effort: attach local tool results (execute/read/write/permission) produced during this prompt.
         try:
@@ -520,6 +574,12 @@ class ACPSession:
     async def close(self) -> None:
         """Close session and terminate agent process."""
         self._state.is_active = False
+        with self._handler_lock:
+            self._closing = True
+            self._event_handler = None
+            self._event_generation += 1
+        if self._client is not None:
+            self._client.release_active_local_image_snapshot()
         if self._ctx_manager:
             try:
                 await self._ctx_manager.__aexit__(None, None, None)

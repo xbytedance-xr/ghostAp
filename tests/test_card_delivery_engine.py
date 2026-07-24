@@ -9,6 +9,9 @@ import pytest
 
 from src.card.delivery.engine import CardDelivery, SequenceConflictError, TransportError
 from src.card.delivery.types import MutationOutcome as MutationOutcomeType
+from src.card.render.budget import RenderBudget
+from src.card.render.renderer import render_card
+from src.card.state.models import CardState, ImageBlock
 from src.card.types import ActiveElement, RenderedCard
 from tests.helpers.delivery_internals import DeliveryInspector
 
@@ -94,6 +97,59 @@ class TestCardDeliveryCreate:
 
 class TestCardDeliveryUpdate:
     """Subsequent deliveries compare signatures."""
+
+    @pytest.mark.parametrize(
+        ("replacement_key", "replacement_alt"),
+        [
+            pytest.param("img_new", "旧图片", id="image-key"),
+            pytest.param("img_old", "新图片", id="alt"),
+        ],
+    )
+    def test_replacing_image_render_fields_triggers_card_update(
+        self,
+        replacement_key,
+        replacement_alt,
+    ):
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+        initial = CardState(
+            blocks=(
+                ImageBlock(
+                    block_id="image:artifact",
+                    image_key="img_old",
+                    alt="旧图片",
+                    status="completed",
+                ),
+            ),
+        )
+        replacement = CardState(
+            blocks=(
+                ImageBlock(
+                    block_id="image:artifact",
+                    image_key=replacement_key,
+                    alt=replacement_alt,
+                    status="completed",
+                ),
+            ),
+        )
+
+        initial_card = render_card(initial, RenderBudget())[0]
+        replacement_card = render_card(replacement, RenderBudget())[0]
+        delivery.deliver("image_session", "chat_abc", [initial_card])
+
+        outcomes = delivery.deliver(
+            "image_session",
+            "chat_abc",
+            [replacement_card],
+        )
+
+        assert replacement_card.structure_signature != initial_card.structure_signature
+        assert outcomes[0].kind == "applied"
+        assert client.updates[0]["card_json"]["body"]["elements"][0] == {
+            "tag": "img",
+            "img_key": replacement_key,
+            "alt": {"tag": "plain_text", "content": replacement_alt},
+        }
 
     def test_signature_change_triggers_update(self):
         client = MockCardClient()
